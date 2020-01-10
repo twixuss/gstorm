@@ -49,6 +49,7 @@ struct Window {
 	V2i clientSize = {1280,720};
 	bool running = true;
 	bool resize = false;
+	bool killFocus = false;
 };
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 	if (msg == WM_CREATE) {
@@ -71,6 +72,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 			}
 			case WM_DESTROY: {
 				window.running = false;
+				return 0;
+			}
+			case WM_KILLFOCUS: {
+				window.killFocus = true;
 				return 0;
 			}
 		}
@@ -202,6 +207,7 @@ struct Chunk {
 	ID3D11ShaderResourceView* iBufferView = 0;
 	u32 indexCount = 0;
 	bool needMeshRegen = false;
+	bool needToResave = false;
 	bool generated = false;
 	Block* blocks = 0;
 	V3i position;
@@ -274,10 +280,9 @@ struct Chunk {
 	}
 	void save(FILE* chunkFile) {
 		assert(chunkFile);
-		if (filePos == FILEPOS_NOT_LOADED) {
+		if (filePos == FILEPOS_NOT_LOADED || !needToResave) {
 			return;
 		}
-		
 		assert(blocks);
 		std::lock_guard g(saveFileMutex);
 		if (filePos == FILEPOS_APPEND) {
@@ -365,6 +370,7 @@ struct Chunk {
 		auto& b = blocks[BLOCK_INDEX(x,y,z)];
 		b = blk;
 		needMeshRegen = true;
+		needToResave = true;
 		return true;
 	}
 	bool setBlock(V3i p, Block blk) {
@@ -406,6 +412,7 @@ struct Chunk {
 		}
 #endif
 		needMeshRegen = true;
+		needToResave = true;
 		generateMesh(device);
 		//std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		generated = true;
@@ -584,23 +591,22 @@ struct ChunkArena {
 	}
 };
 struct World {
-	std::unordered_map<V3i, Chunk*> chunks;
+	std::unordered_map<V3i, Chunk*> loadedChunks;
 	struct Queue {
 		std::vector<Chunk*> buffers[2];
 		std::vector<Chunk*>* current = buffers, *next = buffers + 1;
-		std::recursive_mutex currentMutex, nextMutex;
+		std::recursive_mutex mutex;
 		void push(Chunk* chunk) {
-			nextMutex.lock();
+			std::unique_lock l(mutex);
 			next->push_back(chunk);
-			nextMutex.unlock();
 		}
 		void swap() {
-			nextMutex.lock();
+			std::unique_lock l(mutex);
 			std::swap(current, next);
-			nextMutex.unlock();
 		}
 	} loadQueue, unloadQueue;
 	std::unordered_set<Chunk*> visibleChunks;
+#if 0
 	World() {
 		auto file = fopen(SAVE_FILE, "rb");
 		if (!file)
@@ -619,10 +625,11 @@ struct World {
 		for (int i = 0; i < entryCount; ++i) {
 			fread(&entryPos, sizeof(entryPos), 1, file);
 			fread(blocks, SIZEOF_CHUNK, 1, file);
-			//printChunk(blocks, entryPos);
+			printChunk(blocks, entryPos);
 		}
 		fclose(file);
 	}
+#endif
 	void seeChunk(V3i pos) {
 		visibleChunks.emplace(getChunkUnchecked(pos));
 	}
@@ -641,7 +648,7 @@ struct World {
 
 		std::vector<Chunk*> chunksToUnload;
 		chunksToUnload.reserve(unloadDistance * 2 + 1);
-		for (auto c : chunks) {
+		for (auto& c : loadedChunks) {
 			auto dist = (playerChunk - c.second->position).absolute();
 			if (dist.x > unloadDistance || dist.y > unloadDistance || dist.z > unloadDistance) {
 				unloadQueue.push(c.second);
@@ -649,7 +656,7 @@ struct World {
 			}
 		}
 		for (auto c : chunksToUnload) {
-			chunks.erase(c->position);
+			loadedChunks.erase(c->position);
 		}
 	}
 	void saveFarChunks() {
@@ -658,7 +665,7 @@ struct World {
 	void save() {
 		TIMED_FUNCTION;
 		auto file = openFileRW(SAVE_FILE);
-		for (auto c : chunks) {
+		for (auto c : loadedChunks) {
 			c.second->save(file);
 			c.second->free();
 			delete c.second;
@@ -666,59 +673,58 @@ struct World {
 		fclose(file);
 	}
 	// chunk loader thread
-	void updateChunks(ID3D11Device* device) {
-		/* LOAD CHUNKS */ {
-			loadQueue.currentMutex.lock();
-			DEFER {
-				loadQueue.swap();
-				loadQueue.currentMutex.unlock();
-			};
-			if (loadQueue.current->empty()) 
-				return;
-			printf("To load: %zu\n", loadQueue.current->size());
-			{
-				auto file = fopen(SAVE_FILE, "rb");
-				if (file) {
-					for (auto c : *loadQueue.current) {
-						if (!c->load(file))
-							c->generate(device);
-					}
-					fclose(file);
-				}
-				else {
-					for (auto c : *loadQueue.current) {
+	void loadChunks(ID3D11Device* device) {
+		DEFER {
+			loadQueue.swap();
+		};
+		if (loadQueue.current->empty())
+			return;
+		printf("To load: %zu\n", loadQueue.current->size());
+		{
+			auto file = fopen(SAVE_FILE, "rb");
+			if (file) {
+				for (auto c : *loadQueue.current) {
+					if (!c->load(file))
 						c->generate(device);
-					}
+				}
+				fclose(file);
+			}
+			else {
+				for (auto c : *loadQueue.current) {
+					c->generate(device);
 				}
 			}
-			loadQueue.current->clear();
 		}
-		/* UNLOAD CHUNKS */ {
-			unloadQueue.currentMutex.lock();
-			DEFER {
-				unloadQueue.swap();
-				unloadQueue.currentMutex.unlock();
-			};
-			if (unloadQueue.current->empty()) 
-				return;
-			printf("To unload: %zu\n", unloadQueue.current->size());
-			auto file = openFileRW(SAVE_FILE);
-			for (auto c : *unloadQueue.current) {
-				saveFileMutex.lock();
-				c->save(file);
-				saveFileMutex.unlock();
-				c->free();
-				delete c;
-			}
-			unloadQueue.current->clear();
-			fclose(file);
+		loadQueue.current->clear();
+	}
+	void unloadChunks() {
+		DEFER {
+			unloadQueue.swap();
+		};
+		if (unloadQueue.current->empty())
+			return;
+		printf("To unload: %zu\n", unloadQueue.current->size());
+		auto file = openFileRW(SAVE_FILE);
+		for (auto c : *unloadQueue.current) {
+			saveFileMutex.lock();
+			c->save(file);
+			saveFileMutex.unlock();
+			c->free();
+			delete c;
 		}
+		unloadQueue.current->clear();
+		fclose(file);
+	}
+	void updateChunks(ID3D11Device* device, bool running) {
+		unloadChunks();
+		if(running)
+			loadChunks(device);
 	}
 	Chunk* getChunkUnchecked(V3i pos) {
-		if (auto it = chunks.find(pos); it != chunks.end())
+		if (auto it = loadedChunks.find(pos); it != loadedChunks.end())
 			return it->second;
 		auto chunk = new Chunk(pos);
-		chunks[pos] = chunk;
+		loadedChunks[pos] = chunk;
 		loadQueue.push(chunk);
 		return chunk;
 	}
@@ -963,7 +969,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 	std::thread chunkLoader([device, &window, &world]() {
 		while (window.running) {
-			world.updateChunks(device);
+			world.updateChunks(device, window.running);
 		}
 	});
 
@@ -988,7 +994,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	auto loadWorld = [&]() {
 		TIMED_SCOPE("LOAD WORLD");
 		auto playerChunk = playerPos.getChunk();
-		world.loadQueue.nextMutex.lock();
+		world.loadQueue.mutex.lock();
 #if 0
 		for (int x = chunkDrawDistance; x <= chunkDrawDistance; ++x) {
 			for (int y = chunkDrawDistance; y <= chunkDrawDistance; ++y) {
@@ -1040,7 +1046,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			}
 		}
 #endif
-		world.loadQueue.nextMutex.unlock();
+		world.loadQueue.mutex.unlock();
 		world.unseeChunks(playerPos.getChunk(), chunkDrawDistance, chunkUnloadDistance);
 	};
 	loadWorld();
@@ -1134,7 +1140,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			}
 			TranslateMessage(&msg);
 			DispatchMessageA(&msg);
+			if (window.killFocus) {
+				window.killFocus = false;
+				memset(input.current.keys, 0, sizeof(input.current.keys));
+				memset(input.current.mouse, 0, sizeof(input.current.mouse));
+			}
 		}
+
 
 		if (input.keyDown('V'))
 			moveMode = (MoveMode)(((int)moveMode + 1) % (int)MoveMode::count);
@@ -1212,8 +1224,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			playerVel.z = v.y;
 		}
 
-		auto oldPlayerPos = playerPos.getWorld();
-		auto newPlayerPos = oldPlayerPos;
+		auto newPlayerPos = playerPos.getWorld();
 		if (moveMode == MoveMode::noclip) {
 			grounded = false;
 		} 
@@ -1406,7 +1417,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		}
 #endif
 
-		auto chunkChanged = playerPos.move(newPlayerPos - oldPlayerPos);
+		auto chunkChanged = playerPos.move(newPlayerPos - playerPos.getWorld());
 
 		if (chunkChanged) {
 			loadWorld();
@@ -1469,7 +1480,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		for (auto& c : world.visibleChunks) {
 			drawChunk(c);
 		}
-		//for (auto& c : world.chunks) {
+		//for (auto& c : world.loadedChunks) {
 		//	drawChunk(c.second);
 		//}
 		V3 bpos = cameraPos + view * 3;

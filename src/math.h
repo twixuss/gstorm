@@ -349,3 +349,32 @@ f32 voronoi(V3 v) {
 	}
 	return sqrt(minDist);
 }
+template<class T>
+struct ToInt {
+	using Type = std::conditional_t<
+		std::is_enum_v<T>,
+		std::underlying_type_t<T>,
+			std::conditional_t<
+			std::is_integral_v<T>,
+			T,
+			u32>>;
+};
+
+template<size_t numBits>
+struct Bitfield {
+	u32 field : numBits;
+	constexpr Bitfield() {
+		field = 0;
+	}
+	template<class Int>
+	constexpr void set(Int idx, bool val) {
+		if (val) 
+			field |= 1 << (ToInt<Int>::Type)idx;
+		else 
+			field &= ~(1 << (ToInt<Int>::Type)idx);
+	}
+	template<class Int>
+	constexpr bool get(Int idx) const {
+		return (bool)(field & 1 << (ToInt<Int>::Type)idx);
+	}
+};
