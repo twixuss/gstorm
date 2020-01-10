@@ -274,7 +274,9 @@ struct Chunk {
 	}
 	void save(FILE* chunkFile) {
 		assert(chunkFile);
-		assert(filePos != FILEPOS_NOT_LOADED);
+		if (filePos == FILEPOS_NOT_LOADED) {
+			return;
+		}
 		
 		assert(blocks);
 		std::lock_guard g(saveFileMutex);

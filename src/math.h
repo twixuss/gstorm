@@ -273,8 +273,11 @@ inline V3 floor(V3 v) {
 f32 dot(V3 a, V3 b) {
 	return a.dot(b);
 }
+f32 distanceSqr(V3 a, V3 b) {
+	return (a - b).lengthSqr();
+}
 f32 distance(V3 a, V3 b) {
-	return (a - b).length();
+	return sqrt(distanceSqr(a, b));
 }
 template<class T>
 T min(T a, T b) {
@@ -332,28 +335,17 @@ V3 random01(V3 p) {
 	a += dot(a, a + PI * 4);
 	return frac(V3 {a.x * a.y, a.y * a.z, a.x * a.z});
 };
-f32 voronoi(V3 v, bool returnDistance = true, f32(*distanceFunc)(V3, V3) = distance) {
+f32 voronoi(V3 v) {
 	V3 rel = frac(v) - 0.5f;
 	V3 tile = floor(v);
 	f32 minDist = 1000;
-	f32 id = 0;
-	for (int oz = -1; oz <= 1; ++oz) {
-		for (int ox = -1; ox <= 1; ++ox) {
-			for (int oy = -1; oy <= 1; ++oy) {
-				V3 off {(f32)ox, (f32)oy, (f32)oz};
-				auto testId = random01(tile + off);
-				auto dist = distanceFunc(rel, testId + off - 0.5f);
-				if (returnDistance) {
-					minDist = min(minDist, dist);
-				}
-				else {
-					if (minDist < dist) {
-						minDist = dist;
-						id = testId.x;
-					}
-				}
+	for (i32 z = -1; z <= 1; ++z) {
+		for (i32 x = -1; x <= 1; ++x) {
+			for (i32 y = -1; y <= 1; ++y) {
+				V3 off {(f32)x, (f32)y, (f32)z};
+				minDist = min(minDist, distanceSqr(rel, random01(tile + off) + off - 0.5f));
 			}
 		}
 	}
-	return returnDistance ? minDist : id;
+	return sqrt(minDist);
 }
