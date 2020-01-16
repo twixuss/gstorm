@@ -1,6 +1,8 @@
 #pragma once
 #define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+namespace WH {
 struct WndClassA final : WNDCLASSA {
 	WndClassA() : WNDCLASSA() {}
 	void checkIn() {
@@ -51,28 +53,44 @@ i64 getPerformanceCounter() {
 	QueryPerformanceCounter(&Counter);
 	return Counter.QuadPart;
 }
+i64 getPerformanceFrequency() {
+	LARGE_INTEGER Counter;
+	QueryPerformanceFrequency(&Counter);
+	return Counter.QuadPart;
+}
 f32 getSecondsElapsed(i64 begin, i64 end, i64 freq) {
 	return (f32)(end - begin) / (f32)freq;
 }
 struct TimedScope {
 	const char* name;
-	LARGE_INTEGER begin;
-	TimedScope(const char* name) : name(name) {
-		QueryPerformanceCounter(&begin);
+	i64 begin;
+	TimedScope(const char* name) : name(name), begin(getPerformanceCounter()) {
 	}
 	~TimedScope() {
-		LARGE_INTEGER end, freq;
-		QueryPerformanceCounter(&end);
-		QueryPerformanceFrequency(&freq);
-		printf("%-20s: %.2f ms\n", name, (end.QuadPart - begin.QuadPart) * 1000 / (f32)freq.QuadPart);
+		printf("%s: %.2f ms\n", name, (getPerformanceCounter() - begin) * 1000 / (f32)getPerformanceFrequency());
 	}
 };
 #ifdef BUILD_RELEASE
 #define TIMED_SCOPE(name)
 #define TIMED_FUNCTION 
 #else
-#define TIMED_SCOPE(name) TimedScope _timedScope(name);
-#define TIMED_FUNCTION TimedScope _timedFunction(__FUNCTION__);
+#define TIMED_SCOPE(name)  ::WH::TimedScope _timedScope(name);
+#define TIMED_FUNCTION     ::WH::TimedScope _timedFunction(__FUNCTION__);
 #endif
-#define TIMED_SCOPE_(name) TimedScope _timedScope(name);
-#define TIMED_FUNCTION_ TimedScope _timedFunction(__FUNCTION__);
+#define TIMED_SCOPE_(name) ::WH::TimedScope _timedScope(name);
+#define TIMED_FUNCTION_    ::WH::TimedScope _timedFunction(__FUNCTION__);
+HWND getWallpaperWindow() {
+	auto progman = FindWindowA("Progman", 0);
+	if (!progman) 
+		return 0;
+	if (!SendMessageTimeoutA(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, 0))
+		return 0;
+	HWND result = 0;
+	EnumWindows([](HWND topwnd, LPARAM result) -> BOOL {
+		if (FindWindowExA(topwnd, 0, "SHELLDLL_DefView", 0))
+			*(HWND*)result = FindWindowExA(0, topwnd, "WorkerW", 0);
+		return true;
+	}, (LPARAM)&result);
+	return result;
+}
+}

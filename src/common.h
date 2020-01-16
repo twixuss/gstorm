@@ -1,7 +1,8 @@
 #pragma once
 #include <stdint.h>
 #include <utility>
-#define assert(x) if(!(x)) __debugbreak()
+#include <iostream>
+#define assert(x) if(!(x)) {__debugbreak();exit(-1);}
 
 using i8  = int8_t;
 using i16 = int16_t;
@@ -34,6 +35,8 @@ struct Deferrer {
 	Deferrer(Fn&& fn) : fn(fn) {}
 	~Deferrer() { fn(); }
 };
+#define STRINGIZE_(x) #x
+#define STRINGIZE(x) STRINGIZE_(x)
 #define CONCAT(x,y) x##y
 #define CONCAT2(x,y) CONCAT(x,y)
 #define DEFER Deferrer CONCAT2(_deferrer, __LINE__) = [&]()
@@ -43,4 +46,39 @@ FILE* openFileRW(char const* path) {
 	if (!file)
 		return fopen(path, "w+b");
 	return file;
+}
+
+template<class ...T>
+void Print(const T&... t) {
+	int dummy[] = {(std::cout << t, 0)...};
+}
+template<class T>
+void minmax(T a, T b, T& omin, T& omax) {
+	if (a < b) {
+		omin = a;
+		omax = b;
+	}
+	else {
+		omin = b;
+		omax = a;
+	}
+};
+
+#define KBYTES(x) (x*1024)
+#define MBYTES(x) (KBYTES(x)*1024)
+#define GBYTES(x) (MBYTES(x)*1024)
+
+template<class ByteType = size_t, class Input = ByteType>
+std::pair<ByteType, const char*> normalizeBytes(Input input) {
+	auto units = "B";
+	auto bytes = (ByteType)input;
+	if (bytes >= 1024) { bytes /= 1024; units = "KB"; }
+	if (bytes >= 1024) { bytes /= 1024; units = "MB"; }
+	if (bytes >= 1024) { bytes /= 1024; units = "GB"; }
+	if (bytes >= 1024) { bytes /= 1024; units = "TB"; }
+	if (bytes >= 1024) { bytes /= 1024; units = "PB"; }
+	if (bytes >= 1024) { bytes /= 1024; units = "EB"; }
+	if (bytes >= 1024) { bytes /= 1024; units = "ZB"; }
+	if (bytes >= 1024) { bytes /= 1024; units = "YB"; }
+	return {bytes, units};
 }
