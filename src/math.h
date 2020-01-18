@@ -20,6 +20,8 @@ struct V2 {
 	V2() = default;
 	V2(f32 x, f32 y) : x(x), y(y) {}
 	V2(f32 v) : V2(v, v) {}
+	template<class T>
+	explicit V2(T x, T y) : V2((f32)x, (f32)y) {}
 	explicit V2(V2i b);
 	V2 operator-() const { return {-x,-y}; }
 	V2 operator+(V2 b) const { return {x + b.x,y + b.y}; }
@@ -322,6 +324,49 @@ struct alignas(64) M4 {
 		return os << m.i << ", " << m.j << ", " << m.k << ", " << m.l;
 	}
 };
+u8 randomU8(u8 r) {
+	r += 0x0C;
+	r *= 0x61;
+	r ^= 0xB2;
+	r -= 0x80;
+	r ^= 0xF5;
+	r *= 0xA7;
+	return (r << 4) | (r >> 4);
+}
+u32 randomU32(u32 r) {
+	r += 0x0C252DA0;
+	r *= 0x55555561;
+	r ^= 0xB23E2387;
+	r -= 0x8069BAC0;
+	r ^= 0xF5605798;
+	r *= 0xAAAAAABF;
+	return _rotl(r, 16);
+}
+u32 randomU32(i32 in) {
+	return randomU32((u32)in);
+}
+u32 randomU32(V3i in) {
+	auto x = randomU32(in.x);
+	auto y = randomU32(in.y);
+	auto z = randomU32(in.z);
+	return x + y + z;
+}
+u64 randomU64(V3i in) {
+	auto x = randomU32(in.x);
+	auto y = randomU32(in.y);
+	auto z = randomU32(in.z);
+	return 
+		(u64)x | ((u64)y << 32) +
+		(u64)z | ((u64)x << 32) +
+		(u64)y | ((u64)z << 32);
+}
+#ifdef _M_AMD64
+#define randomSize(x) randomU64(x)
+#elif defined(_M_IX86)
+#define randomSize(x) randomU32(x)
+#else
+#error Unknown architecture
+#endif
 namespace std {
 template<>
 struct hash<V3> {
@@ -342,23 +387,26 @@ struct hash<V3i> {
 	}
 };
 }
-inline f32 frac(f32 x) {
-	return x - floorf(x);
+f32 frac(f32 x) {
+	auto r = x - (i64)x;
+	if (r < 0)
+		++r;
+	return r;
 }
-inline V2 frac(V2 v) {
+V2 frac(V2 v) {
 	return {
 		frac(v.x),
 		frac(v.y),
 	};
 }
-inline V3 frac(V3 v) {
+V3 frac(V3 v) {
 	return {
 		frac(v.x),
 		frac(v.y),
 		frac(v.z),
 	};
 }
-inline V4 frac(V4 v) {
+V4 frac(V4 v) {
 	return {
 		frac(v.x),
 		frac(v.y),
@@ -372,20 +420,20 @@ int frac(int v, int s) {
 		v += s;
 	return v;
 }
-inline V2 floor(V2 v) {
+V2 floor(V2 v) {
 	return {
 		floorf(v.x),
 		floorf(v.y),
 	};
 }
-inline V3 floor(V3 v) {
+V3 floor(V3 v) {
 	return {
 		floorf(v.x),
 		floorf(v.y),
 		floorf(v.z),
 	};
 }
-inline V4 floor(V4 v) {
+V4 floor(V4 v) {
 	return {
 		floorf(v.x),
 		floorf(v.y),
@@ -393,20 +441,47 @@ inline V4 floor(V4 v) {
 		floorf(v.w),
 	};
 }
-inline V2i frac(V2i v, int s) {
+int floor(int v, int step) {
+	if (v < 0 && v % step != 0)
+		return v / step * step - step;
+	else 
+		return v / step * step;
+}
+V2i floor(V2i v, int step) {
+	return {
+		floor(v.x, step),
+		floor(v.y, step),
+	};
+}
+V3i floor(V3i v, int step) {
+	return {
+		floor(v.x, step),
+		floor(v.y, step),
+		floor(v.z, step),
+	};
+}
+V4i floor(V4i v, int step) {
+	return {
+		floor(v.x, step),
+		floor(v.y, step),
+		floor(v.z, step),
+		floor(v.w, step),
+	};
+}
+V2i frac(V2i v, int s) {
 	return {
 		frac(v.x, s),
 		frac(v.y, s),
 	};
 }
-inline V3i frac(V3i v, int s) {
+V3i frac(V3i v, int s) {
 	return {
 		frac(v.x, s),
 		frac(v.y, s),
 		frac(v.z, s),
 	};
 }
-inline V4i frac(V4i v, int s) {
+V4i frac(V4i v, int s) {
 	return {
 		frac(v.x, s),
 		frac(v.y, s),
@@ -443,27 +518,38 @@ f32 coserp(f32 a, f32 b, f32 t) {
 	auto f = (1 - cosf(ft)) * 0.5f;
 	return a * (1 - f) + b * f;
 }
+f32 noise(i32 x) {
+	x = (x << 13) ^ x;
+	return (1.0f - ((x * (x * x * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f);
+}
 f32 noise(i32 x, i32 y) {
-	if (x < 0) x = -x + 2;
-	if (y < 0) y = -y + 2;
 	auto n = x + y * 57;
 	n = (n << 13) ^ n;
 	return (1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7FFFFFFF) / 2147483648.0f);
 }
+f32 cosNoise(f32 v) {
+	auto fl = (int)floor(v);
+	auto l = noise(fl);
+	auto r = noise(fl + 1);
+	return coserp(l, r, frac(v));
+}
 f32 cosNoise(V2 p) {
-	auto bl = noise((int)p.x,     (int)p.y);
-	auto tl = noise((int)p.x,     (int)p.y + 1);
-	auto br = noise((int)p.x + 1, (int)p.y);
-	auto tr = noise((int)p.x + 1, (int)p.y + 1);
-	auto b = coserp(bl, br, frac(p.x));
-	auto t = coserp(tl, tr, frac(p.x));
-	return   coserp(b,  t,  frac(p.y));
+	auto x = (int)floor(p.x);
+	auto y = (int)floor(p.y);
+	auto bl = noise(x,     y);
+	auto tl = noise(x,     y + 1);
+	auto br = noise(x + 1, y);
+	auto tr = noise(x + 1, y + 1);
+	auto fr = frac(p.x);
+	auto b = coserp(bl, br, fr);
+	auto t = coserp(tl, tr, fr);
+	return coserp(b, t, frac(p.y));
 }
 f32 perlin(V2 v, u32 o) {
 	f32 result = 0.0f;
+	f32 div = 0.0f;
 	f32 vmul = 1.0f;
 	f32 pmul = 1.0f;
-	f32 div = 0.0f;
 	for (u32 i = 0; i < o; ++i) {
 		result += cosNoise(v * pmul) * vmul;
 		div += vmul;
@@ -486,12 +572,36 @@ f32 voronoi(V2 v) {
 	V2 rel = frac(v) - 0.5f;
 	V2 tile = floor(v);
 	f32 minDist = 1000;
+	auto getPos = [tile](V2 off) { return random01(tile + off) + off - 0.5f; };
+#if 1
+	// 10.5 s
+	for (f32 x = -1; x <= 1; ++x) {
+		minDist = min(minDist, distanceSqr(rel, getPos(V2 {x,-1})));
+		minDist = min(minDist, distanceSqr(rel, getPos(V2 {x, 0})));
+		minDist = min(minDist, distanceSqr(rel, getPos(V2 {x, 1})));
+	}
+#endif
+#if 0
+	// 13 s
 	for (i32 x = -1; x <= 1; ++x) {
 		for (i32 y = -1; y <= 1; ++y) {
 			V2 off {(f32)x, (f32)y};
 			minDist = min(minDist, distanceSqr(rel, random01(tile + off) + off - 0.5f));
 		}
 	}
+#endif
+#if 0
+	// 17 s
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {-1,-1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {-1, 0})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {-1, 1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 0,-1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 0, 0})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 0, 1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 1,-1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 1, 0})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 1, 1})));
+#endif
 	return sqrt(minDist) * (1 / ROOT2);
 }
 f32 voronoi(V3 v) {
@@ -606,22 +716,4 @@ bool raycastBlock(V3 a, V3 b, V3 blk, Hit& hit, V3 blockDimensions) {
 		return false;
 	hit = hits[min];
 	return true;
-}
-u32 randomU32(u32 r) {
-	r += 0x0C252DA0;
-	r *= 0x9C5E8CFF;
-	r ^= 0xB23E2387;
-	r -= 0x8069BAC0;
-	r ^= 0xF5605798;
-	r *= 0x445076F9;
-	return _rotl(r, 16);
-}
-u32 randomU32(i32 in) {
-	return randomU32((u32)in);
-}
-u32 randomU32(V3i in) {
-	auto x = randomU32(in.x);
-	auto y = randomU32(in.y);
-	auto z = randomU32(in.z);
-	return x + y + z;
 }

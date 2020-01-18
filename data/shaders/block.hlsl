@@ -35,23 +35,23 @@ static const float3 positions[8] = {
 	float3(-0.5,-0.5, 0.5),
 	float3(-0.5,-0.5,-0.5),
 };
-float4 getPosition(Vertex v) {
+float4 getPosition(BlockVertex v) {
 	float4 position = float4(positions[(v.data0 >> 3) & 0x7], 1);
 	position.x += (v.data0 >> 16) & 0x1F;
 	position.y += (v.data0 >> 11) & 0x1F;
 	position.z += (v.data0 >> 6 ) & 0x1F;
 	return position;
 }
-float3 getNormal(Vertex v) {
+float3 getNormal(BlockVertex v) {
 	return normals[v.data0 & 0x7];
 }
-float2 getUv(Vertex v) {
+float2 getUv(BlockVertex v) {
 	float2 uv;
 	uv.x = ((v.data1 >> 6) & 0x3F) * ATLAS_ENTRY_SIZE;
 	uv.y = (v.data1 & 0x3F) * ATLAS_ENTRY_SIZE;
 	return uv;
 }
-StructuredBuffer<Vertex> vertices : register(t0);
+StructuredBuffer<BlockVertex> vertices : register(t0);
 Texture2D grassTex : register(t2);
 SamplerState samplerState : register(s0);
 #define MAP(type)                                       \
@@ -65,7 +65,7 @@ MAP(float3)
 MAP(float4)
 
 void vMain(in uint id : SV_VertexID, out V2P o) {
-	Vertex v = vertices[id];
+	BlockVertex v = vertices[id];
 	float4 position = getPosition(v);
 	float3 normal = getNormal(v);
 	float2 uv = getUv(v);

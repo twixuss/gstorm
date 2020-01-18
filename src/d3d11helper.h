@@ -5,6 +5,7 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include "../dep/Microsoft DirectX SDK/Include/D3DX11.h"
+#include <atomic>
 #pragma comment(lib, "d3d11")
 #pragma comment(lib, "d3dcompiler")
 #pragma comment(lib, "../dep/Microsoft DirectX SDK/Lib/x64/d3dx11")
@@ -38,6 +39,7 @@ struct Renderer {
 	IDXGISwapChain* swapChain;
 	ID3D11Device* device;
 	ID3D11DeviceContext* deviceContext;
+	std::atomic_uint drawCalls;
 	Renderer(HWND window, V2i size) {
 		DXGI_SWAP_CHAIN_DESC swapChainDesc {};
 		swapChainDesc.BufferCount = 2;
@@ -53,6 +55,13 @@ struct Renderer {
 		DHR(D3D11CreateDeviceAndSwapChain(0, D3D_DRIVER_TYPE_HARDWARE, 0, CREATE_DEVICE_FLAGS,
 										  0, 0, D3D11_SDK_VERSION, &swapChainDesc,
 										  &swapChain, &device, 0, &deviceContext));
+	}
+	u32 getDrawCalls() {
+		return drawCalls.exchange(0);
+	}
+	void draw(u32 vertexCount, u32 offset = 0) {
+		deviceContext->Draw(vertexCount, offset);
+		++drawCalls;
 	}
 	ID3D11VertexShader* createVertexShader(wchar_t const* path) {
 		ID3DBlob* blob = 0;

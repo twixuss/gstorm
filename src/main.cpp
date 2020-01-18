@@ -1,7 +1,7 @@
-
-
-// TODO: free memory of far chunks, but left them visible
-
+// TODO: 
+// Free memory of far chunks, but left them visible
+// Make approximate meshes for far chunks
+// BUG: chunk saved twice
 
 #pragma warning(disable:4189)//unused
 #pragma warning(disable:4324)//align padding
@@ -26,16 +26,14 @@
 #include "winhelper.h"
 #include "d3d11helper.h"
 #include <timeapi.h>
-#include <atomic>
 #pragma comment(lib, "winmm")
 #define WINDOW_STYLE (WS_OVERLAPPEDWINDOW | WS_VISIBLE)
 #define DATA "../data/"
 #define LDATA L"../data/"
 #define INVALID_BLOCK_POS INT32_MIN
-#define FILEPOS_NOT_LOADED ((FilePos)-1)
-#define FILEPOS_APPEND ((FilePos)-2)
+#define FILEPOS_INVALID ((FilePos)1)
+#define FILEPOS_APPEND ((FilePos)2)
 #include "borismap.h"
-#define WORLD_SURFACE 1
 struct InputState {
 	V2i mousePosition;
 	V2i mouseDelta;
@@ -80,11 +78,11 @@ struct DoubleQueue {
 	}
 	bool empty() { 
 		if (current->empty()) {
-			swap();
-			if (current->empty()) {
+			if (next->empty()) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				return true;
 			}
+			swap();
 		}
 		return false;
 	}
@@ -144,9 +142,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 	return DefWindowProc(hwnd, msg, wp, lp);
 }
 using BlockID = u8;
-struct Block {
-	BlockID id = 0;
-};
 #define AXIS_PX 0
 #define AXIS_NX 1
 #define AXIS_PY 2
@@ -202,13 +197,13 @@ bool isPhysical(BlockID id) {
 	return true;
 }
 
-#define CHUNK_SIZE 32
-#define TOTAL_CHUNK_SIZE (CHUNK_SIZE *CHUNK_SIZE * CHUNK_SIZE)
-#define FOR_BLOCK_IN_CHUNK 		   \
-for (int z=0; z < CHUNK_SIZE; ++z) \
-for (int x=0; x < CHUNK_SIZE; ++x) \
-for (int y=0; y < CHUNK_SIZE; ++y) 
-#define BLOCK_INDEX(x,y,z) ((z) * CHUNK_SIZE * CHUNK_SIZE + (x) * CHUNK_SIZE + (y))
+#define CHUNK_WIDTH 32
+#define CHUNK_VOLUME (CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_WIDTH)
+#define FOR_BLOCK_IN_CHUNK 		    \
+for (int z=0; z < CHUNK_WIDTH; ++z) \
+for (int x=0; x < CHUNK_WIDTH; ++x) \
+for (int y=0; y < CHUNK_WIDTH; ++y) 
+#define BLOCK_INDEX(x,y,z) ((z) * CHUNK_WIDTH * CHUNK_WIDTH + (x) * CHUNK_WIDTH + (y))
 
 #include "../data/shaders/blockVertex.h"
 
@@ -232,13 +227,13 @@ struct alignas(16) BlitCBuffer {
 	V2 sampleOffset;
 };
 struct Mesh {
-	std::vector<Vertex> vertices;
+	std::vector<BlockVertex> vertices;
 	ID3D11Buffer* vBuffer = 0;
 	ID3D11ShaderResourceView* vBufferView = 0;
 	u32 vertexCount = 0;
-	void load(Renderer& renderer, char* const path, std::vector<Vertex>&& verticesi) {
+	void load(Renderer& renderer, char* const path, std::vector<BlockVertex>&& verticesi) {
 		vertices = std::move(verticesi);
-		u32 vertexSize = sizeof(Vertex);
+		u32 vertexSize = sizeof(BlockVertex);
 		vertexCount = (u32)vertices.size();
 		assert(vertexCount);
 		u32 vertexBufferSize = vertexCount * vertexSize;
@@ -251,207 +246,173 @@ struct Mesh {
 		if (!vertexCount)
 			return;
 		renderer.deviceContext->VSSetShaderResources(0, 1, &vBufferView);
-		renderer.deviceContext->Draw(vertexCount, 0);
+		renderer.draw(vertexCount);
 	}
 };
 Mesh blockMesh;
-#define SIZEOF_CHUNK (sizeof(Block) * TOTAL_CHUNK_SIZE)
+#define CHUNK_SIZE (sizeof(BlockID) * CHUNK_VOLUME)
 #define SAVE_FILE DATA "save/world"
-void printChunk(Block*, V3i);
-std::mutex drawMutex;
-V3i chunkPosFromBlock(V3 pos) {
-	return {
-		(int)floorf(pos.x / CHUNK_SIZE),
-		(int)floorf(pos.y / CHUNK_SIZE),
-		(int)floorf(pos.z / CHUNK_SIZE)
-	};
-}
+void printChunk(BlockID*, V3i);
 V3i chunkPosFromBlock(V3i pos) {
-	return chunkPosFromBlock((V3)pos);
+	return floor(pos, CHUNK_WIDTH) / CHUNK_WIDTH;
+}
+V3i chunkPosFromBlock(V3 pos) {
+	return chunkPosFromBlock(V3i {pos});
 }
 V3 r2w(V3 rel, V3i chunk) {
-	return rel + (V3)(chunk * CHUNK_SIZE);
+	return rel + (V3)(chunk * CHUNK_WIDTH);
 }
 V3i r2w(V3i rel, V3i chunk) {
-	return rel + chunk * CHUNK_SIZE;
+	return rel + chunk * CHUNK_WIDTH;
 }
 V3 w2r(V3 world, V3i chunk) {
-	return world - (V3)(chunk * CHUNK_SIZE);
+	return world - (V3)(chunk * CHUNK_WIDTH);
 }
 V3i w2r(V3i world, V3i chunk) {
-	return world - chunk * CHUNK_SIZE;
+	return world - chunk * CHUNK_WIDTH;
 }
-std::atomic<size_t> vramUsage;
+std::atomic<size_t> ramUsage, vramUsage;
 i64 generateTime, generateCount;
-f32 generateMS;
 std::mutex debugGenerateMutex;
 struct Chunk;
-#define CHUNK_PTR_NO_REF 1
-#if CHUNK_PTR_NO_REF
 using ChunkPtr = Chunk*;
-#else
-struct ChunkPtr {
-	ChunkPtr() = default;
-	ChunkPtr(int val) { assert(val == 0); }
-	ChunkPtr(std::nullptr_t) {}
-	ChunkPtr(Chunk* ptr) : ptr(ptr) {
-		incref();
-	}
-	ChunkPtr(const ChunkPtr& other) {
-		*this = other;
-	}
-	ChunkPtr(ChunkPtr&& other) {
-		*this = std::move(other);
-	}
-	~ChunkPtr() {
-		if (ptr) {
-			decref();
-		}
-	}
-	ChunkPtr& operator=(const ChunkPtr& other) {
-		if (ptr) 
-			decref();
-		ptr = other.ptr;
-		if (ptr)
-			incref();
-		return *this;
-	}
-	ChunkPtr& operator=(ChunkPtr&& other) {
-		if (ptr)
-			decref();
-		ptr = other.ptr;
-		if (ptr)
-			incref();
-		return *this;
-	}
-	Chunk* operator->() { return ptr; }
-	const Chunk* operator->() const { return ptr; }
-	operator bool() const { return ptr; }
-	bool operator==(const ChunkPtr& other) const { return ptr == other.ptr; }
-	bool operator!=(const ChunkPtr& other) const { return ptr != other.ptr; }
-	Chunk* get() { return ptr; }
-	void release();
-private:
-	Chunk* ptr = 0;
-	friend struct std::hash<ChunkPtr>;
-	void incref();
-	void decref();
-	u32 getref();
-};
-namespace std {
-template<>
-struct hash<ChunkPtr> {
-	size_t operator()(const ChunkPtr& ptr) const {
-		return std::hash<Chunk*>{}(ptr.ptr);
-	}
-};
-}
-
-#endif
+#define MAX_CHUNK_VERTEX_COUNT 65536
+std::atomic_uint meshesBuilt = 0;
 struct Chunk {
-	ID3D11Buffer* vBuffer = 0;
-	//ID3D11Buffer* iBuffer = 0;
-	ID3D11ShaderResourceView* vBufferView = 0;
-	//ID3D11ShaderResourceView* iBufferView = 0;
-	Block* blocks = 0;
+	struct VertexBuffer {
+		ID3D11Buffer* vBuffer = 0;
+		ID3D11ShaderResourceView* vBufferView = 0;
+		u32 vertexCount = 0;
+		void free() {
+			if (vBuffer) { vBuffer->Release();     vBuffer     = 0; }
+			if (vBufferView) { vBufferView->Release(); vBufferView = 0; }
+			vramUsage -= vertexCount * sizeof(BlockVertex);
+			vertexCount = 0;
+		}
+	};
+	struct MeshBuffer {
+		VertexBuffer buffers[2], * current = buffers, * next = buffers + 1;
+		void swap() {
+			std::swap(current, next);
+		}
+		void free() {
+			for (auto& b : buffers) {
+				b.free();
+			}
+		}
+	} meshBuffer;
+	//VertexBuffer approxMesh;
+	BlockID* blocks = 0;
 	Renderer& renderer;
 	V3i position;
-	u32 vertexCount = 0;
 	bool needToSave = false;
+	bool meshGenerated = false;
 	bool generated = false;
 	bool wantedToBeDeleted = false;
-	bool meshGenerated = false;
-	//bool cold = true;
 	std::atomic_int userCount = 0;
 	std::mutex deleteMutex;
+	std::mutex bufferMutex;
 #ifndef BUILD_RELEASE
 	u32 refCount = 0;
 	std::unordered_map<const char*, u32> users;
 	std::set<ChunkPtr*> references;
 #endif
-	Chunk(V3i position, Renderer& renderer) : position(position), renderer(renderer) {}
+	DrawCBuffer drawData;
+	Chunk(V3i position, Renderer& renderer) : position(position), renderer(renderer) {
+		ramUsage += sizeof(Chunk);
+		drawData.solidColor = 1;
+	}
 	~Chunk() {
-		assert(userCount == 0); // TODO: this fires sometimes
+		ramUsage -= sizeof(Chunk);
+		assert(userCount == 0);
 	}
 	void allocateBlocks() {
 		if (!blocks) {
-			blocks = new Block[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE] {};
+			blocks = new BlockID[CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_WIDTH] {};
+			ramUsage += CHUNK_SIZE;
 		}
 	}
 	void freeBlocks() {
 		if (blocks) {
 			delete blocks;
 			blocks = 0;
+			ramUsage -= CHUNK_SIZE;
 		}
 	}
 	void free() {
 		freeBlocks();
-		if (vBuffer) vBuffer->Release();
-		//if (iBuffer) iBuffer->Release();
-		if (vBufferView) vBufferView->Release();
-		vramUsage -= vertexCount * sizeof(Vertex);
-		//if (iBufferView) iBufferView->Release();
+		meshBuffer.free();
+		//approxMesh.free();
 	}
-	FilePos filePos = FILEPOS_NOT_LOADED;
+	FilePos filePos = FILEPOS_INVALID;
 	bool load(FILE* chunkFile) {
 		//TIMED_FUNCTION_;
 		assert(chunkFile);
 
 		filePos = BorisHash::find(position);
-		if (filePos == FILEPOS_NOT_LOADED)
+		if (filePos == FILEPOS_INVALID)
 			return false;
 
-		assert(filePos % SIZEOF_CHUNK == 0);
+		assert(filePos % CHUNK_SIZE == 0);
 		_fseeki64(chunkFile, filePos, SEEK_SET);
 		allocateBlocks();
-		fread(blocks, SIZEOF_CHUNK, 1, chunkFile);
+		fread(blocks, CHUNK_SIZE, 1, chunkFile);
 		generated = true;
 		return true;
 	}
 	void save(FILE* chunkFile) {
 		//TIMED_FUNCTION_;
 		assert(chunkFile);
-		if (filePos == FILEPOS_NOT_LOADED || !needToSave) {
+		if (filePos == FILEPOS_INVALID || !needToSave) {
 			return;
 		}
+		needToSave = false;
 		assert(blocks);
+
+		// this HACK does not work! dirt in air!
+		/*
+		filePos = BorisHash::find(position);
+		if (filePos == FILEPOS_NOT_LOADED) filePos = FILEPOS_APPEND;
+		*/
+
 		if (filePos == FILEPOS_APPEND) {
 			_fseeki64(chunkFile, 0, SEEK_END);
 			filePos = _ftelli64(chunkFile);
-			assert(filePos % SIZEOF_CHUNK == 0);
+			assert(filePos % CHUNK_SIZE == 0);
 
-			fwrite(blocks, SIZEOF_CHUNK, 1, chunkFile);
+			fwrite(blocks, CHUNK_SIZE, 1, chunkFile);
 
 			BorisHash::add({position, filePos});
 		}
 		else {
-			assert(filePos % SIZEOF_CHUNK == 0);
+			assert(filePos % CHUNK_SIZE == 0);
 			_fseeki64(chunkFile, filePos, SEEK_SET);
-			fwrite(blocks, SIZEOF_CHUNK, 1, chunkFile);
+			fwrite(blocks, CHUNK_SIZE, 1, chunkFile);
 		}
 	}
-	// returns true if block is on boundary
-	bool setBlock(int x, int y, int z, Block blk) {
-		assert(x >= 0 && x < CHUNK_SIZE);
-		assert(y >= 0 && y < CHUNK_SIZE);
-		assert(z >= 0 && z < CHUNK_SIZE);
+	// returns true if block changed
+	bool setBlock(int x, int y, int z, BlockID blk) {
+		assert(x >= 0 && x < CHUNK_WIDTH);
+		assert(y >= 0 && y < CHUNK_WIDTH);
+		assert(z >= 0 && z < CHUNK_WIDTH);
 		auto& b = blocks[BLOCK_INDEX(x,y,z)];
-		auto result = b.id != blk.id;
+		auto result = b != blk;
 		b = blk;
 		needToSave = true;
+		meshGenerated = false;
 		return result;
 	}
-	bool setBlock(V3i p, Block blk) {
+	bool setBlock(V3i p, BlockID blk) {
 		return setBlock(p.x, p.y, p.z, blk);
 	}
-	Block& getBlock(int x, int y, int z) {
-		assert(x >= 0 && x < CHUNK_SIZE);
-		assert(y >= 0 && y < CHUNK_SIZE);
-		assert(z >= 0 && z < CHUNK_SIZE);
+	BlockID& getBlock(int x, int y, int z) {
+		assert(x >= 0 && x < CHUNK_WIDTH);
+		assert(y >= 0 && y < CHUNK_WIDTH);
+		assert(z >= 0 && z < CHUNK_WIDTH);
 		assert(blocks);
 		return blocks[BLOCK_INDEX(x, y, z)];
 	}
-	Block& getBlock(V3i p) {
+	BlockID& getBlock(V3i p) {
 		return getBlock(p.x, p.y, p.z);
 	}
 	void generate() {
@@ -462,50 +423,20 @@ struct Chunk {
 			return;
 		//printf("Generated ");
 		//printChunk(blocks, position);
-#if WORLD_SURFACE
 		if (position.y < 0) {
-			memset(blocks, 0x01010101, SIZEOF_CHUNK);
+			memset(blocks, 0x01010101, CHUNK_SIZE);
 		}
 		else {
 			auto beginCounter = WH::getPerformanceCounter();
-#if 0
-			V2 rels[CHUNK_SIZE][CHUNK_SIZE];
-			V2 tiles[CHUNK_SIZE][CHUNK_SIZE];
-			for (int x = 0; x < CHUNK_SIZE; ++x) for (int z = 0; z < CHUNK_SIZE; ++z) {
-				V2 seed = V2 {V2i{position.x, position.z} *CHUNK_SIZE + V2i{x, z}} / 256.0f / PI;
-				tiles[x][z] = floor(seed);
-				rels[x][z] = frac(seed) - 0.5f;
-			}
-			int results[CHUNK_SIZE][CHUNK_SIZE] {};
-			for (int x = 0; x < CHUNK_SIZE; ++x) for (int z = 0; z < CHUNK_SIZE; ++z) {
-				auto result = FLT_MAX;
-				for (i32 sx = -1; sx <= 1; ++sx) {
-					for (i32 sy = -1; sy <= 1; ++sy) {
-						V2 off = {(f32)sx, (f32)sy};
-						result = min(result, distanceSqr(rels[x][z], distanceSqr(rels[x][z], random01(tiles[x][z] + off) + off - 0.5f)));
-					}
-				}
-				results[x][z] = (int)(sqrt(result) * (1/ROOT2) * 512 - position.y * CHUNK_SIZE);
-			}
-
-			for (int x = 0; x < CHUNK_SIZE; ++x) for (int z = 0; z < CHUNK_SIZE; ++z) {
-				auto h = results[x][z];
-				auto top = h;
-				h = clamp(h, 0, CHUNK_SIZE);
-				for (int y = 0; y < h; ++y) {
-					blocks[BLOCK_INDEX(x, y, z)].id = y == top - 1 ? BLOCK_GRASS : BLOCK_DIRT;
-				}
-			}
-#else
-			for (int x = 0; x < CHUNK_SIZE; ++x) {
-				for (int z = 0; z < CHUNK_SIZE; ++z) {
-					V2 globalPos = V2 {(f32)(position.x * CHUNK_SIZE + x), (f32)(position.z * CHUNK_SIZE + z)};
+			for (int x = 0; x < CHUNK_WIDTH; ++x) {
+				for (int z = 0; z < CHUNK_WIDTH; ++z) {
+					V2 globalPos = V2 {(f32)(position.x * CHUNK_WIDTH + x), (f32)(position.z * CHUNK_WIDTH + z)};
 					int h = 0;
 					//h += (int)(128 - perlin(seed + 100000, 8) * 256);
 					h += (int)(textureDetail(8, globalPos / 256.0f / PI, voronoi) * 512) + 2;
-					h -= position.y * CHUNK_SIZE;
+					h -= position.y * CHUNK_WIDTH;
 					auto top = h;
-					h = clamp(h, 0, CHUNK_SIZE);
+					h = clamp(h, 0, CHUNK_WIDTH);
 					for (int y = 0; y < h; ++y) {
 						auto b = BLOCK_DIRT;
 						if (y == top - 1) {
@@ -513,32 +444,77 @@ struct Chunk {
 							b = perlin(globalPos / PI, 2) > 0.5f ? BLOCK_TALL_GRASS : BLOCK_AIR;
 						}
 						if (y == top - 2) b = BLOCK_GRASS;
-						blocks[BLOCK_INDEX(x, y, z)].id = b;
+						blocks[BLOCK_INDEX(x, y, z)] = b;
 					}
 				}
 			}
-#endif
 			auto endCounter = WH::getPerformanceCounter();
 			debugGenerateMutex.lock();
 			generateTime += endCounter - beginCounter;
 			++generateCount;
-			if (generateCount == 10000) {
-				generateMS = (f32)(generateTime / 10000) / WH::getPerformanceFrequency() * 1000.f;
-				generateTime = 0;
-				generateCount = 0;
-			}
 			debugGenerateMutex.unlock();
 		}
-#else
-		FOR_BLOCK_IN_CHUNK {
-			if (voronoi((V3(position * CHUNK_SIZE) + V3((f32)x, (f32)y, (f32)z)) / 64.0f * PI) < 0.1f)
-				blocks[BLOCK_INDEX(x, y, z)].id = BLOCK_GRASS;
-		}
-#endif
-		//std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		generated = true;
+		
+		//if (saveSpaceOnDisk)
+			needToSave = true; // TODO: make option for saving space on disk
 	}
-	void generateMesh(const std::array<ChunkPtr, 6>& neighbors) {
+#if 0
+	void buildApproxMesh() {
+		u32 heights[4] {};
+		for (int y=0; y < CHUNK_WIDTH; ++y) { if()heights[0] = max(); }
+		struct Vertex {
+			V3 pos, nrm;
+			V2 uv;
+		};
+		int pos = blockInfos.at(BLOCK_GRASS).offsetAtlasPos(AXIS_PY);
+		V2i atlasPos {
+			pos % ATLAS_SIZE,
+			pos / ATLAS_SIZE,
+		};
+		V2 uvs[4] {
+			V2{atlasPos.x,  atlasPos.y} * ATLAS_ENTRY_SIZE,
+			V2{atlasPos.x + 1,atlasPos.y} * ATLAS_ENTRY_SIZE,
+			V2{atlasPos.x + 1,atlasPos.y + 1} * ATLAS_ENTRY_SIZE,
+			V2{atlasPos.x,  atlasPos.y + 1} * ATLAS_ENTRY_SIZE,
+		};
+		auto uvIdx = randomU32(position) % 4;
+		Vertex verts[4] {
+			{{0, (f32)heights[0], CHUNK_WIDTH}		    ,{0,1,0}, uvs[(uvIdx + 0) % 4]},
+			{{CHUNK_WIDTH, (f32)heights[1], CHUNK_WIDTH},{0,1,0}, uvs[(uvIdx + 1) % 4]},
+			{{0, (f32)heights[2], 0}					,{0,1,0}, uvs[(uvIdx + 3) % 4]},
+			{{CHUNK_WIDTH, (f32)heights[3], 0}		    ,{0,1,0}, uvs[(uvIdx + 2) % 4]},
+		};
+
+		Vertex vertices[6] {
+			verts[0],
+			verts[1],
+			verts[2],
+			verts[1],
+			verts[3],
+			verts[2],
+		}
+		approxMesh.free();
+		approxMesh.vertexCount = 6;
+
+		if (approxMesh.vertexCount) {
+			u32 vertexBufferSize = approxMesh.vertexCount * sizeof(vertices[0]);
+			approxMesh.vBuffer = renderer.createImmutableStructuredBuffer(vertexBufferSize, sizeof(vertices[0]), vertices);
+			vramUsage += vertexBufferSize;
+
+			D3D11_SHADER_RESOURCE_VIEW_DESC desc {};
+			desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+			desc.Buffer.NumElements = approxMesh.vertexCount;
+			DHR(renderer.device->CreateShaderResourceView(approxMesh.vBuffer, &desc, &approxMesh.vBufferView));
+		}
+	}
+	void drawApprox(ID3D11Buffer* drawCBuffer) {
+		renderer.deviceContext->VSSetShaderResources(0, 1, &approxMesh.vBufferView);
+		renderer.updateBuffer(drawCBuffer, drawData);
+		renderer.draw(approxMesh.vertexCount);
+	}
+#endif
+	void generateMesh(BlockVertex* vertexPool, const std::array<ChunkPtr, 6>& neighbors) {
 		deleteMutex.lock();
 		if (wantedToBeDeleted) {
 			deleteMutex.unlock();
@@ -547,69 +523,74 @@ struct Chunk {
 		deleteMutex.unlock();
 		//TIMED_FUNCTION;
 		assert(blocks);
-#define RESERVE_COUNT 4
-		std::vector<Vertex> vertices;
-		vertices.reserve(CHUNK_SIZE * CHUNK_SIZE * 4 * RESERVE_COUNT);
-		std::vector<u32> indices;
-		indices.reserve(CHUNK_SIZE * CHUNK_SIZE * 6 * RESERVE_COUNT);
-#undef RESERVE_COUNT
+		BlockVertex* verticesBegin = vertexPool;
+		auto pushVertex = [&vertexPool, verticesBegin](BlockVertex vert) {
+			assert(vertexPool - verticesBegin < MAX_CHUNK_VERTEX_COUNT && "small pool");
+			*vertexPool++ = vert;
+		};
+
 		//u32 idxOff = 0;
 		FOR_BLOCK_IN_CHUNK {
 			auto & b = getBlock(x,y,z);
-			switch (b.id) {
+			switch (b) {
 				case 0:
 					continue;
 			}
-			auto& blockInfo = blockInfos.at(b.id);
+			auto& blockInfo = blockInfos.at(b);
 
 			switch (blockInfo.type) {
 				case BlockInfo::Type::default:
 				case BlockInfo::Type::topSideBottom: {
 					bool visible[6];
-					visible[0] = x == CHUNK_SIZE - 1 ? (neighbors[0] ? isTransparent(neighbors[0]->getBlock             (0, y, z).id) : true) : isTransparent(getBlock(x + 1, y, z).id);
-					visible[1] =              x == 0 ? (neighbors[1] ? isTransparent(neighbors[1]->getBlock(CHUNK_SIZE - 1, y, z).id) : true) : isTransparent(getBlock(x - 1, y, z).id);
-					visible[2] = y == CHUNK_SIZE - 1 ? (neighbors[2] ? isTransparent(neighbors[2]->getBlock             (x, 0, z).id) : true) : isTransparent(getBlock(x, y + 1, z).id);
-					visible[3] =              y == 0 ? (neighbors[3] ? isTransparent(neighbors[3]->getBlock(x, CHUNK_SIZE - 1, z).id) : true) : isTransparent(getBlock(x, y - 1, z).id);
-					visible[4] = z == CHUNK_SIZE - 1 ? (neighbors[4] ? isTransparent(neighbors[4]->getBlock             (x, y, 0).id) : true) : isTransparent(getBlock(x, y, z + 1).id);
-					visible[5] =              z == 0 ? (neighbors[5] ? isTransparent(neighbors[5]->getBlock(x, y, CHUNK_SIZE - 1).id) : true) : isTransparent(getBlock(x, y, z - 1).id);
+					visible[0] = x == CHUNK_WIDTH - 1 ? (neighbors[0] ? isTransparent(neighbors[0]->getBlock              (0, y, z)) : true) : isTransparent(getBlock(x + 1, y, z));
+					visible[1] =               x == 0 ? (neighbors[1] ? isTransparent(neighbors[1]->getBlock(CHUNK_WIDTH - 1, y, z)) : true) : isTransparent(getBlock(x - 1, y, z));
+					visible[2] = y == CHUNK_WIDTH - 1 ? (neighbors[2] ? isTransparent(neighbors[2]->getBlock              (x, 0, z)) : true) : isTransparent(getBlock(x, y + 1, z));
+					visible[3] =               y == 0 ? (neighbors[3] ? isTransparent(neighbors[3]->getBlock(x, CHUNK_WIDTH - 1, z)) : true) : isTransparent(getBlock(x, y - 1, z));
+					visible[4] = z == CHUNK_WIDTH - 1 ? (neighbors[4] ? isTransparent(neighbors[4]->getBlock              (x, y, 0)) : true) : isTransparent(getBlock(x, y, z + 1));
+					visible[5] =               z == 0 ? (neighbors[5] ? isTransparent(neighbors[5]->getBlock(x, y, CHUNK_WIDTH - 1)) : true) : isTransparent(getBlock(x, y, z - 1));
 					auto calcVerts = [&](u8 axis) {
-						Vertex verts[4] {};
+						u32 defData0 = makeVertexData0(x,y,z,0,axis);
+						BlockVertex verts[4] {};
+						verts[0].data0 = defData0;
+						verts[1].data0 = defData0;
+						verts[2].data0 = defData0;
+						verts[3].data0 = defData0;
 						switch (axis) {
 							case AXIS_PX:
-								verts[0].setPosition(x, y, z, 1, axis);
-								verts[1].setPosition(x, y, z, 0, axis);
-								verts[2].setPosition(x, y, z, 3, axis);
-								verts[3].setPosition(x, y, z, 2, axis);
+								verts[0].setPositionID(1);
+								verts[1].setPositionID(0);
+								verts[2].setPositionID(3);
+								verts[3].setPositionID(2);
 								break;
 							case AXIS_NX:
-								verts[0].setPosition(x, y, z, 4, axis);
-								verts[1].setPosition(x, y, z, 5, axis);
-								verts[2].setPosition(x, y, z, 6, axis);
-								verts[3].setPosition(x, y, z, 7, axis);
+								verts[0].setPositionID(4);
+								verts[1].setPositionID(5);
+								verts[2].setPositionID(6);
+								verts[3].setPositionID(7);
 								break;
 							case AXIS_PY:
-								verts[0].setPosition(x, y, z, 4, axis);
-								verts[1].setPosition(x, y, z, 0, axis);
-								verts[2].setPosition(x, y, z, 5, axis);
-								verts[3].setPosition(x, y, z, 1, axis);
+								verts[0].setPositionID(4);
+								verts[1].setPositionID(0);
+								verts[2].setPositionID(5);
+								verts[3].setPositionID(1);
 								break;
 							case AXIS_NY:
-								verts[0].setPosition(x, y, z, 7, axis);
-								verts[1].setPosition(x, y, z, 3, axis);
-								verts[2].setPosition(x, y, z, 6, axis);
-								verts[3].setPosition(x, y, z, 2, axis);
+								verts[0].setPositionID(7);
+								verts[1].setPositionID(3);
+								verts[2].setPositionID(6);
+								verts[3].setPositionID(2);
 								break;
 							case AXIS_PZ:
-								verts[0].setPosition(x, y, z, 0, axis);
-								verts[1].setPosition(x, y, z, 4, axis);
-								verts[2].setPosition(x, y, z, 2, axis);
-								verts[3].setPosition(x, y, z, 6, axis);
+								verts[0].setPositionID(0);
+								verts[1].setPositionID(4);
+								verts[2].setPositionID(2);
+								verts[3].setPositionID(6);
 								break;
 							case AXIS_NZ:
-								verts[0].setPosition(x, y, z, 5, axis);
-								verts[1].setPosition(x, y, z, 1, axis);
-								verts[2].setPosition(x, y, z, 7, axis);
-								verts[3].setPosition(x, y, z, 3, axis);
+								verts[0].setPositionID(5);
+								verts[1].setPositionID(1);
+								verts[2].setPositionID(7);
+								verts[3].setPositionID(3);
 								break;
 							default:
 								assert(0);
@@ -628,16 +609,16 @@ struct Chunk {
 						uvs[1] = {atlasPos.x + 1,atlasPos.y};
 						uvs[2] = {atlasPos.x + 1,atlasPos.y + 1};
 						uvs[3] = {atlasPos.x,  atlasPos.y + 1};
-						verts[0].setUv(uvs[(uvIdx + 0) % 4]);
-						verts[1].setUv(uvs[(uvIdx + 1) % 4]);
-						verts[2].setUv(uvs[(uvIdx + 3) % 4]);
-						verts[3].setUv(uvs[(uvIdx + 2) % 4]);
-						vertices.push_back(verts[0]);
-						vertices.push_back(verts[1]);
-						vertices.push_back(verts[2]);
-						vertices.push_back(verts[1]);
-						vertices.push_back(verts[3]);
-						vertices.push_back(verts[2]);
+						verts[0].setData1(uvs[(uvIdx + 0) % 4]);
+						verts[1].setData1(uvs[(uvIdx + 1) % 4]);
+						verts[2].setData1(uvs[(uvIdx + 3) % 4]);
+						verts[3].setData1(uvs[(uvIdx + 2) % 4]);
+						pushVertex(verts[0]);
+						pushVertex(verts[1]);
+						pushVertex(verts[2]);
+						pushVertex(verts[1]);
+						pushVertex(verts[3]);
+						pushVertex(verts[2]);
 					};
 					if (visible[0]) calcVerts(AXIS_PX);
 					if (visible[1]) calcVerts(AXIS_NX);
@@ -648,7 +629,7 @@ struct Chunk {
 					break;
 				}
 				case BlockInfo::Type::x: {
-					Vertex verts[4] {};
+					BlockVertex verts[4] {};
 					V2i atlasPos {
 						 blockInfo.atlasPos % ATLAS_SIZE,
 						 blockInfo.atlasPos / ATLAS_SIZE,
@@ -660,16 +641,16 @@ struct Chunk {
 					uvs[3] = {atlasPos.x,  atlasPos.y + 1};
 					auto randomizeUv = [&](u32 o) {
 						if (randomU32(r2w(V3i {x,y,z} + o, position)) & 1) {
-							verts[0].setUv(uvs[0]);
-							verts[1].setUv(uvs[1]);
-							verts[2].setUv(uvs[3]);
-							verts[3].setUv(uvs[2]);
+							verts[0].setData1(uvs[0]);
+							verts[1].setData1(uvs[1]);
+							verts[2].setData1(uvs[3]);
+							verts[3].setData1(uvs[2]);
 						}
 						else {
-							verts[0].setUv(uvs[1]);
-							verts[1].setUv(uvs[0]);
-							verts[2].setUv(uvs[2]);
-							verts[3].setUv(uvs[3]);
+							verts[0].setData1(uvs[1]);
+							verts[1].setData1(uvs[0]);
+							verts[2].setData1(uvs[2]);
+							verts[3].setData1(uvs[3]);
 						}
 					};
 					auto insertVertices = [&](u32 p, u32 a) {
@@ -678,12 +659,12 @@ struct Chunk {
 						verts[1].data0 = makeVertexData0(x, y, z, 5 - p, AXIS_PY);
 						verts[2].data0 = makeVertexData0(x, y, z, 2 + p, AXIS_PY);
 						verts[3].data0 = makeVertexData0(x, y, z, 7 - p, AXIS_PY);
-						vertices.push_back(verts[0]);
-						vertices.push_back(verts[a ? 1 : 2]);
-						vertices.push_back(verts[a ? 2 : 1]);
-						vertices.push_back(verts[1]);
-						vertices.push_back(verts[a ? 3 : 2]);
-						vertices.push_back(verts[a ? 2 : 3]);
+						pushVertex(verts[0]);
+						pushVertex(verts[a ? 1 : 2]);
+						pushVertex(verts[a ? 2 : 1]);
+						pushVertex(verts[1]);
+						pushVertex(verts[a ? 3 : 2]);
+						pushVertex(verts[a ? 2 : 3]);
 					};
 					insertVertices(0, 0);
 					insertVertices(0, 1);
@@ -695,84 +676,53 @@ struct Chunk {
 					assert(0);
 			}
 		}
+		std::unique_lock l(bufferMutex);
+		auto& buffer = *meshBuffer.next;
 
-		u32 vertexSize = sizeof(Vertex);
-		//u32 indexSize = sizeof(u32);
-		//u32 indexCount = (u32)indices.size();
-		if (vertexCount) {
-			vramUsage -= vertexCount * sizeof(Vertex);
-		}
-		vertexCount = (u32)vertices.size();
-		//u32 indexBufferSize = indexCount * indexSize;
-		u32 vertexBufferSize = vertexCount * vertexSize;
+		buffer.free();
 
-		std::unique_lock l(drawMutex);
-		if (vBuffer) {
-			vBuffer->Release();
-			vBuffer = 0;
-		}
-		if (vBufferView) {
-			vBufferView->Release();
-			vBufferView = 0;
-		}
-		if (!vertexCount)
+		buffer.vertexCount = (u32)(vertexPool - verticesBegin);
+
+		if (!buffer.vertexCount)
 			return;
 
-		//if (iBuffer) iBuffer->Release();
-		//if (iBufferView) iBufferView->Release();
-
-		vBuffer = renderer.createImmutableStructuredBuffer(vertexBufferSize, vertexSize, vertices.data());
-		meshGenerated = true;
+		u32 vertexBufferSize = buffer.vertexCount * sizeof(verticesBegin[0]);
+		buffer.vBuffer = renderer.createImmutableStructuredBuffer(vertexBufferSize, sizeof(verticesBegin[0]), verticesBegin);
 		vramUsage += vertexBufferSize;
-		//iBuffer = renderer.createImmutableStructuredBuffer(indexBufferSize, indexSize, indices.data());
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC desc {};
 		desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-		desc.Buffer.NumElements = vertexCount;
-		DHR(renderer.device->CreateShaderResourceView(vBuffer, &desc, &vBufferView));
-		//desc.Buffer.NumElements = indexCount;
-		//DHR(renderer.device->CreateShaderResourceView(iBuffer, &desc, &iBufferView));
+		desc.Buffer.NumElements = buffer.vertexCount;
+		DHR(renderer.device->CreateShaderResourceView(buffer.vBuffer, &desc, &buffer.vBufferView));
+		meshGenerated = true;
+		++meshesBuilt;
 	}
-	void draw(V3i playerChunk, const M4& matrixVP, ID3D11Buffer* cBuffer) const {
-		if (!vertexCount || !vBufferView)
-			return;
-
-		DrawCBuffer data;
-		data.model = M4::translation((V3)((position - playerChunk) * CHUNK_SIZE));
-		data.mvp = matrixVP * data.model;
-		data.solidColor = 1;
-		renderer.updateBuffer(cBuffer, data);
-		drawMutex.lock();
-		renderer.deviceContext->VSSetShaderResources(0, 1, &vBufferView);
-		//renderer.deviceContext->VSSetShaderResources(1, 1, &iBufferView);
-		drawMutex.unlock();
-		renderer.deviceContext->Draw(vertexCount, 0);
+	void draw(ID3D11Buffer* drawCBuffer) {
+		auto buffer = meshBuffer.current;
+		{
+			std::unique_lock lk(bufferMutex);
+			if (meshBuffer.next->vBuffer) {
+				meshBuffer.current->free();
+				meshBuffer.swap();
+				buffer = meshBuffer.current;
+			}
+			if (!buffer->vertexCount || !buffer->vBufferView)
+				return;
+			renderer.deviceContext->VSSetShaderResources(0, 1, &buffer->vBufferView);
+		}
+		renderer.updateBuffer(drawCBuffer, drawData);
+		renderer.draw(buffer->vertexCount);
+	}
+	void calcMatrices(V3i playerChunk, const M4& matrixVP) {
+		drawData.model = M4::translation((V3)((position - playerChunk) * CHUNK_WIDTH));
+		drawData.mvp = matrixVP * drawData.model;
 	}
 };
-#if !CHUNK_PTR_NO_REF
-u32 ChunkPtr::getref() {
-	return ptr->refCount;
-}
-inline void ChunkPtr::release() {
-	decref();
-	delete ptr;
-	ptr = 0;
-}
-void ChunkPtr::incref() {
-	++ptr->refCount;
-	ptr->references.insert(this);
-}
-void ChunkPtr::decref() {
-	assert(ptr->refCount);
-	--ptr->refCount;
-	ptr->references.erase(this);
-}
-#endif
 /*
 void printChunk(Block* blocks, V3i pos) {
 	auto usedBlocks = 0;
 	for (int j = 0; j < TOTAL_CHUNK_SIZE; ++j) {
-		if (blocks[j].id == BlockID::cube) ++usedBlocks;
+		if (blocks[j] == BlockID::cube) ++usedBlocks;
 	}
 	printf("chunk %i %i %i, used blocks: %u\n", pos.x, pos.y, pos.z, usedBlocks);
 }
@@ -818,11 +768,13 @@ int maxDistance(V3i a, V3i b) {
 #else
 #define HOT_DIST 1
 #endif
+#define MESH_QUEUE_COUNT 2
 struct World {
 	std::unordered_map<V3i, ChunkPtr> loadedChunks;
-	DoubleQueue<ChunkPtr> loadQueue, unloadQueue, meshQueue; // , coldQueue;
+	DoubleQueue<ChunkPtr> loadQueue, unloadQueue, meshQueues[MESH_QUEUE_COUNT] {};
+	BlockVertex* vertexPools[MESH_QUEUE_COUNT + 1]; // extra one for immediate mesh build
+	std::atomic_uint meshQueueIdx = 0;
 	std::atomic_bool loadQueueNoPush = false, meshQueueNoPush = false;
-	//std::unordered_set<ChunkPtr> visibleChunks;
 	std::vector<ChunkPtr> chunksWantedToDelete;
 	Renderer& renderer;
 	const V3i& playerChunk;
@@ -831,6 +783,9 @@ struct World {
 	World(Renderer& renderer, const V3i& playerChunk, int drawDistance) : renderer(renderer), playerChunk(playerChunk), drawDistance(drawDistance), hotDistance(min(drawDistance, HOT_DIST)) {
 		int w = drawDistance * 2 + 1;
 		loadedChunks.reserve(w * w * w);
+		for (auto& pool : vertexPools) {
+			pool = (BlockVertex*)malloc(MAX_CHUNK_VERTEX_COUNT * sizeof(BlockVertex));
+		}
 		BorisHash::init();
 		//BorisHash::debug();
 	}
@@ -854,7 +809,6 @@ struct World {
 		chunksToUnload.reserve(drawDistance * 2 + 1);
 		for (auto& [pos, c] : loadedChunks) {
 			auto dist = maxDistance(playerChunk, c->position);
-			//c->cold = dist > hotDistance;
 			if (dist > drawDistance) {
 				unloadQueue.push(c);
 				chunksToUnload.push_back(c);
@@ -871,11 +825,7 @@ struct World {
 		for (auto& [position, chunk] : loadedChunks) {
 			chunk->save(chunkFile);
 			chunk->free();
-#if CHUNK_PTR_NO_REF
 			delete chunk;
-#else
-			chunk.release();
-#endif
 			printf("Saving world... %zu%%\r", progress++ * 100 / loadedChunks.size());
 		}
 		puts("Saving world... 100%");
@@ -903,6 +853,10 @@ struct World {
 			chunksWantedToDelete.push_back(c);
 		}
 	}
+	void pushMeshQueue(ChunkPtr c) {
+		meshQueues[meshQueueIdx].push(c);
+		meshQueueIdx = (meshQueueIdx + 1) % MESH_QUEUE_COUNT;
+	}
 	// chunk loader thread
 	bool loadChunks() {
 		auto file = fopen(SAVE_FILE, "rb");
@@ -914,9 +868,9 @@ struct World {
 #ifndef BUILD_RELEASE
 				++c->users["meshQueue"];
 #endif
-				meshQueue.push(c);
+				pushMeshQueue(c);
 			};
-			printf("To load: %zu\n", loadQueue.size());
+			//printf("To load: %zu\n", loadQueue.size());
 			for (auto& c : loadQueue) {
 				DEFER {
 					--c->userCount;
@@ -925,7 +879,7 @@ struct World {
 #endif
 				};
 				if (maxDistance(playerChunk, c->position) > drawDistance) {
-					wantToDelete(c);
+					continue;
 				}
 				else {
 					c->wantedToBeDeleted = false;
@@ -935,6 +889,9 @@ struct World {
 				if (!file || !c->load(file)) {
 					c->generate();
 				}
+#if 0
+				c->buildApproxMesh();
+#endif
 				loadMesh(c);
 				for (auto& n : getNeighbors(c)) {
 					if (n) {
@@ -960,12 +917,10 @@ struct World {
 	void unloadChunks() {
 		if (unloadQueue.empty()) 
 			return;
-		printf("To save: %zu\n", unloadQueue.size());
-		auto file = openFileRW(SAVE_FILE);
+		//printf("To save: %zu\n", unloadQueue.size());
 		for (auto& c : unloadQueue) {
 			wantToDelete(c);
 		}
-		fclose(file);
 		unloadQueue.clear();
 		unloadQueue.swap();
 
@@ -983,68 +938,23 @@ struct World {
 				notToDelete.push_back(c);
 		}
 		chunksWantedToDelete = std::move(notToDelete);
-		printf("To delete: %zu\n", toDelete.size());
+		//printf("To delete: %zu\n", toDelete.size());
+		auto file = openFileRW(SAVE_FILE);
 		for (auto& c : toDelete) {
 			c->save(file);
 			c->free();
-#if CHUNK_PTR_NO_REF
 			delete c;
-#else
-			if (c->refCount != 1) {
-				for (const auto& r : c->references) {
-					for (const auto& t : meshQueue) if (*r == t) puts("meshQueue");
-					for (const auto& t : loadQueue) if (*r == t) puts("loadQueue");
-					for (const auto& t : unloadQueue) if (*r == t) puts("unloadQueue");
-					for (const auto& t : loadedChunks) if (*r == t.second) puts("loadedChunks");
-					for (const auto& t : visibleChunks) if (*r == t) puts("visibleChunks");
-				}
-				assert(0);
-				}
-			c.release();
-#endif
 		}
+		fclose(file);
 	}
-	/*
-	void freeColdChunks() {
-		auto file = openFileRW(SAVE_FILE);
-		DEFER {fclose(file);};
-		auto processQueue = [&]() {
-			for (auto& c : coldQueue) {
-				DEFER {
-					--c->userCount;
-#ifndef BUILD_RELEASE
-					--c->users["coldQueue"];
-#endif
-				};
-				//if (coldQueueNoPush)
-				//	continue;
-				if (c->meshGenerated) {
-					c->save(file);
-					c->freeBlocks();
-				}
-			}
-			coldQueue.clear();
-			coldQueue.swap();
-		};
-		//if (coldQueueNoPush) {
-		//	processQueue();
-		//	processQueue();
-		//	return false;
-		//}
-		if (coldQueue.empty())
-			return;
-		processQueue();
-
-	}
-	*/
 	bool updateChunks() {
 		unloadChunks();
-		//freeColdChunks();
 		return loadChunks();
 	}
-	bool generateMeshes() {
+	bool generateMeshes(u32 idx) {
+		auto& meshQueue = meshQueues[idx];
 		auto processQueue = [&]() {
-			//printf("Meshes to generate: %zu\n", meshQueue.size());
+			//printf("To mesh: %zu\n", meshQueue.size());
 			for (auto& c : meshQueue) {
 				DEFER {
 					--c->userCount;
@@ -1054,16 +964,7 @@ struct World {
 				};
 				if (meshQueueNoPush)
 					continue;
-				c->generateMesh(getNeighbors(c));
-				/*
-				if (c->cold) {
-					++c->userCount;
-#ifndef BUILD_RELEASE
-					++c->users["coldQueue"];
-#endif
-					coldQueue.push(c);
-				}
-				*/
+				c->generateMesh(vertexPools[idx], getNeighbors(c));
 			}
 			meshQueue.clear();
 			meshQueue.swap();
@@ -1105,48 +1006,48 @@ struct World {
 	ChunkPtr getChunkFromBlock(V3i pos) {
 		return getChunk(chunkPosFromBlock(pos));
 	}
-	bool setBlock(V3i worldPos, Block blk, bool immediate = false) {
+	bool setBlock(V3i worldPos, BlockID blk, bool immediate = false) {
 		auto chunkPos = chunkPosFromBlock(worldPos);
 		auto c = getChunk(chunkPos);
 		if (!c)
 			return false;
-		auto relPos = frac(worldPos, CHUNK_SIZE);
+		auto relPos = frac(worldPos, CHUNK_WIDTH);
 		if (c->setBlock(relPos, blk)) {
 			auto updateMesh = [this, immediate](ChunkPtr chunk) {
 				if (immediate) {
-					chunk->generateMesh(getNeighbors(chunk));
+					chunk->generateMesh(vertexPools[MESH_QUEUE_COUNT], getNeighbors(chunk));
 				}
 				else
-					meshQueue.push(chunk);
+					pushMeshQueue(chunk);
 			};
 			updateMesh(c);
 			auto onBoundary = [](V3i p) {
 				return
-					p.x == 0 || p.x == CHUNK_SIZE - 1 ||
-					p.y == 0 || p.y == CHUNK_SIZE - 1 ||
-					p.z == 0 || p.z == CHUNK_SIZE - 1;
+					p.x == 0 || p.x == CHUNK_WIDTH - 1 ||
+					p.y == 0 || p.y == CHUNK_WIDTH - 1 ||
+					p.z == 0 || p.z == CHUNK_WIDTH - 1;
 			};
 			if (relPos.x == 0) if (auto n = getChunk(chunkPos + V3i {-1,0,0}); n)  updateMesh(n);
 			if (relPos.y == 0) if (auto n = getChunk(chunkPos + V3i {0,-1,0}); n)  updateMesh(n);
 			if (relPos.z == 0) if (auto n = getChunk(chunkPos + V3i {0,0,-1}); n)  updateMesh(n);
-			if (relPos.x == CHUNK_SIZE - 1) if (auto n = getChunk(chunkPos + V3i {1,0,0}); n)  updateMesh(n);
-			if (relPos.y == CHUNK_SIZE - 1) if (auto n = getChunk(chunkPos + V3i {0,1,0}); n)  updateMesh(n);
-			if (relPos.z == CHUNK_SIZE - 1) if (auto n = getChunk(chunkPos + V3i {0,0,1}); n)  updateMesh(n);
+			if (relPos.x == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {1,0,0}); n)  updateMesh(n);
+			if (relPos.y == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {0,1,0}); n)  updateMesh(n);
+			if (relPos.z == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {0,0,1}); n)  updateMesh(n);
 			return true;
 		}
 		return false;
 	}
-	bool setBlock(V3 pos, Block blk, bool immediate = false) {
+	bool setBlock(V3 pos, BlockID blk, bool immediate = false) {
 		return setBlock((V3i)pos, blk);
 	}
-	std::optional<Block> getBlock(V3i pos) {
+	std::optional<BlockID> getBlock(V3i pos) {
 		if (auto c = getChunkFromBlock(pos); c)
-			return c->getBlock(frac(pos, CHUNK_SIZE));
+			return c->getBlock(frac(pos, CHUNK_WIDTH));
 		return {};
 	}
 	bool canWalkInto(V3i pos) {
 		if (auto c = getChunkFromBlock(pos); c)
-			return !isPhysical(c->getBlock(frac(pos, CHUNK_SIZE)).id);
+			return !isPhysical(c->getBlock(frac(pos, CHUNK_WIDTH)));
 		return false;
 	}
 };
@@ -1157,7 +1058,7 @@ struct Position {
 		normalize();
 	}
 	V3 getWorld() {
-		return V3 {chunkPos * CHUNK_SIZE} +relPos;
+		return V3 {chunkPos * CHUNK_WIDTH} +relPos;
 	}
 	bool move(V3 delta) {
 		relPos += delta;
@@ -1166,24 +1067,58 @@ struct Position {
 	bool normalize() {
 		auto oldChunk = chunkPos;
 		bool chunkChanged = false;
-		if (relPos.x >= CHUNK_SIZE) { chunkPos.x += int(relPos.x / CHUNK_SIZE); relPos.x = fmodf(relPos.x, CHUNK_SIZE); chunkChanged = true; }
-		if (relPos.y >= CHUNK_SIZE) { chunkPos.y += int(relPos.y / CHUNK_SIZE); relPos.y = fmodf(relPos.y, CHUNK_SIZE); chunkChanged = true; }
-		if (relPos.z >= CHUNK_SIZE) { chunkPos.z += int(relPos.z / CHUNK_SIZE); relPos.z = fmodf(relPos.z, CHUNK_SIZE); chunkChanged = true; }
-		if (relPos.x < 0) { relPos.x = fabsf(relPos.x); chunkPos.x -= int(relPos.x / CHUNK_SIZE) + 1; relPos.x = -fmodf(relPos.x, CHUNK_SIZE) + CHUNK_SIZE; chunkChanged = true; }
-		if (relPos.y < 0) { relPos.y = fabsf(relPos.y); chunkPos.y -= int(relPos.y / CHUNK_SIZE) + 1; relPos.y = -fmodf(relPos.y, CHUNK_SIZE) + CHUNK_SIZE; chunkChanged = true; }
-		if (relPos.z < 0) { relPos.z = fabsf(relPos.z); chunkPos.z -= int(relPos.z / CHUNK_SIZE) + 1; relPos.z = -fmodf(relPos.z, CHUNK_SIZE) + CHUNK_SIZE; chunkChanged = true; }
+		if (relPos.x >= CHUNK_WIDTH) { chunkPos.x += int(relPos.x / CHUNK_WIDTH); relPos.x = fmodf(relPos.x, CHUNK_WIDTH); chunkChanged = true; }
+		if (relPos.y >= CHUNK_WIDTH) { chunkPos.y += int(relPos.y / CHUNK_WIDTH); relPos.y = fmodf(relPos.y, CHUNK_WIDTH); chunkChanged = true; }
+		if (relPos.z >= CHUNK_WIDTH) { chunkPos.z += int(relPos.z / CHUNK_WIDTH); relPos.z = fmodf(relPos.z, CHUNK_WIDTH); chunkChanged = true; }
+		if (relPos.x < 0) { relPos.x = fabsf(relPos.x); chunkPos.x -= int(relPos.x / CHUNK_WIDTH) + 1; relPos.x = -fmodf(relPos.x, CHUNK_WIDTH) + CHUNK_WIDTH; chunkChanged = true; }
+		if (relPos.y < 0) { relPos.y = fabsf(relPos.y); chunkPos.y -= int(relPos.y / CHUNK_WIDTH) + 1; relPos.y = -fmodf(relPos.y, CHUNK_WIDTH) + CHUNK_WIDTH; chunkChanged = true; }
+		if (relPos.z < 0) { relPos.z = fabsf(relPos.z); chunkPos.z -= int(relPos.z / CHUNK_WIDTH) + 1; relPos.z = -fmodf(relPos.z, CHUNK_WIDTH) + CHUNK_WIDTH; chunkChanged = true; }
 		return chunkChanged;
 	}
 	V3 relPos;
 	V3i chunkPos;
 };
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
+	_set_invalid_parameter_handler([](const wchar_t* expression, const wchar_t* function, const wchar_t* file, unsigned line, uintptr_t) {
+		assert(0);
+	});
 	AllocConsole();
 	freopen("CONOUT$", "w", stdout);
 	freopen("CONIN$", "r", stdin);
 	SetConsoleCP(1251);
 	SetConsoleOutputCP(1251);
 
+	//for (u32 i=0; i < 256; ++i) {
+	//	printf("%u\n", randomU8((u8)i));
+	//}
+#if 0
+	for (int x = 0; x < CHUNK_WIDTH * 2; ++x) for (int y = 0; y < CHUNK_WIDTH * 2; ++y) for (int z = 0; z < CHUNK_WIDTH * 2; ++z) {
+		auto c = chunkPosFromBlock(V3i{x,y,z});
+		printf("%i %i %i => %i %i %i\n", x, y, z, c.x, c.y, c.z);
+	}
+	assert(0);
+#endif
+#if 0
+	{
+		f32 sum = 0;
+		auto beg = WH::getPerformanceCounter();
+		for (int i=0; i < 30000000;++i) {
+			auto x = (f32)i;
+			sum += voronoi(V2 {x, 0});
+			sum += voronoi(V2 {x, 1});
+			sum += voronoi(V2 {x, 2});
+			sum += voronoi(V2 {x, 3});
+			sum += voronoi(V2 {x, 4});
+			sum += voronoi(V2 {x, 5});
+			sum += voronoi(V2 {x, 6});
+			sum += voronoi(V2 {x, 7});
+			sum += voronoi(V2 {x, 8});
+			sum += voronoi(V2 {x, 9});
+		}
+		auto end = WH::getPerformanceCounter();
+		printf("sum: %f, time: %.3fms\n", sum, (f32)(end-beg)/WH::getPerformanceFrequency() * 1000);
+	}
+#endif
 	/*
 	for (u32 i=0; i < 0x10; ++i) {
 		//printf("%u\n", randomU32(i));
@@ -1201,7 +1136,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	//	}
 	//	return 1;
 	//}, 1);
-
 	const f32 maxSpeed = 15;
 	const f32 jumpForce = 250;
 	const f32 airMult = 0.2;
@@ -1213,7 +1147,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	const f32 camHeight = 0.625f;
 
 	Position spawnPos;
-	spawnPos.setWorld({0, 250, 0});
+	spawnPos.setWorld({0, 225, 0});
 
 	Position playerPos = spawnPos;
 	V3 playerVel;
@@ -1223,7 +1157,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 #ifdef BUILD_RELEASE
 #define DEFAULT_DRAW_DISTANCE 8
 #else
-#define DEFAULT_DRAW_DISTANCE 2
+#define DEFAULT_DRAW_DISTANCE 4
 #endif
 
 	int chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
@@ -1246,7 +1180,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		memoryStatus.dwLength = sizeof(MEMORYSTATUSEX);
 		GlobalMemoryStatusEx(&memoryStatus);
 		size_t x = chunkDrawDistance * 2 + 1;
-		x *= CHUNK_SIZE * sizeof(Block);
+		x *= CHUNK_WIDTH * sizeof(BlockID);
 		size_t memoryNeeded = x * x * x;
 		if (memoryNeeded > memoryStatus.ullTotalPhys) {
 			auto [value,unit] = normalizeBytes<double>(memoryNeeded);
@@ -1302,6 +1236,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	ID3D11VertexShader* blockVS = renderer.createVertexShader(LDATA "shaders/block.hlsl");
 	ID3D11PixelShader* blockPS  = renderer.createPixelShader (LDATA "shaders/block.hlsl");
 
+	ID3D11VertexShader* approxVS = renderer.createVertexShader(LDATA "shaders/approx.hlsl");
+	ID3D11PixelShader*  approxPS = renderer.createPixelShader (LDATA "shaders/approx.hlsl");
+
 	ID3D11VertexShader* blitVS = 0;
 	ID3D11PixelShader*  blitPS = 0;
 	switch (superSampleScale) {
@@ -1332,7 +1269,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	BlitCBuffer  blitCBufferData;
 
 	sceneCBufferData.fogColor = clearColor;
-	sceneCBufferData.fogDistance = (f32)chunkDrawDistance * CHUNK_SIZE;
+	sceneCBufferData.fogDistance = (f32)chunkDrawDistance * CHUNK_WIDTH;
 
 	ID3D11Buffer* drawCBuffer  = renderer.createDynamicBuffer  (D3D11_BIND_CONSTANT_BUFFER, sizeof(drawCBufferData ), 0, 0);
 	ID3D11Buffer* frameCBuffer = renderer.createDynamicBuffer  (D3D11_BIND_CONSTANT_BUFFER, sizeof(frameCBufferData), 0, 0);
@@ -1354,8 +1291,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	blockInfos[BLOCK_GRASS] = {0, BlockInfo::Type::topSideBottom, {0,0,1,1,0,0}};
 	blockInfos[BLOCK_TALL_GRASS] = {3, BlockInfo::Type::x};
 
-	auto vertsFromFaces = [](const std::vector<Vertex>& verts) {
-		std::vector<Vertex> result;
+	auto vertsFromFaces = [](const std::vector<BlockVertex>& verts) {
+		std::vector<BlockVertex> result;
 		assert(verts.size() % 4 == 0);
 		result.reserve(verts.size() / 2 * 3);
 		for (int i=0; i < verts.size(); i+=4) {
@@ -1403,29 +1340,40 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 	World world(renderer, playerPos.chunkPos, chunkDrawDistance);
 
-	std::thread chunkLoader([&]() { while (world.updateChunks()); });
-	std::thread meshGenerator([&]() { while (world.generateMeshes()); });
-
-	{
-		//FILE* file = fopen(PATH_SAVE, "rb");
-		//if (file) {
-		//	u32 blockCount;
-		//	fread(&blockCount, sizeof(blockCount), 1, file);
-		//	for (u32 i= 0; i < blockCount; ++i) {
-		//		decltype(world.blocks)::iterator::value_type val;
-		//		fread(&val, sizeof(val), 1, file);
-		//		world.blocks.insert(val);
-		//	}
-		//	fclose(file);
-		//}
-		//else {
-
-		//}
+#if 0
+	for (int x=-5; x <= 5; ++x) for (int y=-5; y <= 5; ++y) for (int z=-5; z <= 5; ++z) {
+		BorisHash::add({{x,y,z}, FilePos(x * 11 * 11 + y * 11 + z)});
 	}
+	for (int x=-5; x <= 5; ++x) for (int y=-5; y <= 5; ++y) for (int z=-5; z <= 5; ++z) {
+		assert(BorisHash::find({x,y,z}) == x * 11 * 11 + y * 11 + z);
+	}
+	assert(0);
+#endif
 
+	std::thread chunkLoader([&]() { 
+		SetThreadName((DWORD)-1, "Chunk loader");
+		//DHR(SetThreadDescription(GetCurrentThread(), L"Chunk loader"));
+		while (world.updateChunks());
+	});
+//#define DISABLE_MESH
+#ifndef DISABLE_MESH
+	std::vector<std::thread> meshGenerators;
+	for(u32 i=0;i<MESH_QUEUE_COUNT;++i)
+		meshGenerators.emplace_back([&world, i]() { 
+			{
+				char buffer[64];
+				sprintf(buffer, "Mesh generator #%u", i);
+				SetThreadName((DWORD)-1, buffer);
+				//wchar_t buffer[64];
+				//swprintf(buffer, L"Mesh generator #%u", i);
+				//DHR(SetThreadDescription(GetCurrentThread(), buffer));
+			}
+			while (world.generateMeshes(i));
+	});
+#endif
 
 	auto loadWorld = [&]() {
-		TIMED_SCOPE("LOAD WORLD");
+		//TIMED_SCOPE("LOAD WORLD");
 		auto playerChunk = playerPos.chunkPos;
 		//world.loadQueue.mutex.lock();
 #if 0
@@ -1516,6 +1464,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 	char windowTitle[256] {};
 
+#define BOT 0
+
 	auto lastCounter = WH::getPerformanceCounter();
 	while (window.running) {
 		input.swap();
@@ -1590,7 +1540,14 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		cameraRot.x -= input.mouseDelta().y * 0.0005f;
 		cameraRot.y += input.mouseDelta().x * 0.0005f;
 
+
 		V3 mov;
+#if BOT
+		static f32 time = 0;
+		time += targetFrameTime;
+		cameraRot.y += cosNoise(time * 0.1f) * 0.01f;
+		++mov.z;
+#endif
 		mov.x += input.keyHeld('D');
 		mov.x -= input.keyHeld('A');
 		mov.z += input.keyHeld('W');
@@ -1633,7 +1590,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		else
 			accelMult *= (maxSpeed - playerVel.xz().length()) / maxSpeed;
 
-		if (input.keyHeld(VK_SHIFT))
+		if (input.keyHeld(VK_SHIFT) || BOT)
 			accelMult *= 2;
 
 		acceleration += mov * targetFrameTime * accelMult * 2500;
@@ -1680,18 +1637,17 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 				for (int y = mini.y; y <= maxi.y; ++y) {
 					for (int x = mini.x; x <= maxi.x; ++x) {
 						V3i worldTestBlock = {x,y,z}; //world pos
-						if (auto opt = world.getBlock(worldTestBlock); opt.has_value()) {
-							if (predicate(*opt)) {
-								auto relTestBlock = w2r(worldTestBlock, playerPos.chunkPos);
-								Hit hit;
-								if (raycastBlock(begin, end, (V3)relTestBlock, hit, extent + 0.5f)) {
-									auto lenSqr = (begin - hit.p).lengthSqr();
-									if (lenSqr < minDist) {
-										minDist = lenSqr;
-										outHit = hit;
-										outBlock = relTestBlock;
-										wasHit = true;
-									}
+						auto opt = world.getBlock(worldTestBlock);
+						if ((opt.has_value() && predicate(*opt)) || !opt.has_value()) {
+							auto relTestBlock = w2r(worldTestBlock, playerPos.chunkPos);
+							Hit hit;
+							if (raycastBlock(begin, end, (V3)relTestBlock, hit, extent + 0.5f)) {
+								auto lenSqr = (begin - hit.p).lengthSqr();
+								if (lenSqr < minDist) {
+									minDist = lenSqr;
+									outHit = hit;
+									outBlock = relTestBlock;
+									wasHit = true;
 								}
 							}
 						}
@@ -1739,7 +1695,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 					break;
 				Hit hit;
 				V3i relHitBlock;
-				if (raycast(begin, end, hit, relHitBlock, [&](const Block& b) { return !isTransparent(b.id); }, playerDimH)) {
+				if (raycast(begin, end, hit, relHitBlock, [&](const BlockID& b) { return !isTransparent(b); }, playerDimH)) {
 					f32 ndotup = hit.n.dot({0,1,0});
 					if (ndotup > 0.5f)
 						newGrounded = moveMode != MoveMode::fly;
@@ -1851,14 +1807,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			}
 		}
 
-		renderer.deviceContext->OMSetRenderTargets(1, worldRenderTarget, depthView);
-		renderer.deviceContext->ClearRenderTargetView(*worldRenderTarget, &clearColor.x);
-		renderer.deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH, 1.0f, 0);
-		renderer.setViewport(window.clientSize * superSampleScale);
-		renderer.deviceContext->VSSetShader(blockVS, 0, 0);
-		renderer.deviceContext->PSSetShader(blockPS, 0, 0);
-		renderer.deviceContext->PSSetShaderResources(2, 1, &atlasTex);
-
 		struct FrustumPlanes {
 			V4 frustumPlanes[6];
 			constexpr FrustumPlanes(const M4& vp) noexcept {
@@ -1908,12 +1856,33 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			}
 		};
 		FrustumPlanes frustumPlanes { matrixVP };
-		u32 chunksVisible = 0;
+		static std::vector<ChunkPtr> chunksToDraw;
+		chunksToDraw.clear();
 		for (auto& [pos,c] : world.loadedChunks) {
-			if (frustumPlanes.containsSphere(V3 {(c->position - playerPos.chunkPos) * CHUNK_SIZE + CHUNK_SIZE / 2}, CHUNK_SIZE * ROOT3)) {
-				++chunksVisible;
-				c->draw(playerPos.chunkPos, matrixVP, drawCBuffer);
+			if (frustumPlanes.containsSphere(V3 {(c->position - playerPos.chunkPos) * CHUNK_WIDTH + CHUNK_WIDTH / 2}, CHUNK_WIDTH * ROOT3)) {
+				chunksToDraw.push_back(c);
 			}
+		}
+		renderer.deviceContext->OMSetRenderTargets(1, worldRenderTarget, depthView);
+		renderer.deviceContext->ClearRenderTargetView(*worldRenderTarget, &clearColor.x);
+		renderer.deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+		renderer.setViewport(window.clientSize* superSampleScale);
+		renderer.deviceContext->PSSetShaderResources(2, 1, &atlasTex);
+		for (auto& c : chunksToDraw) {
+			c->calcMatrices(playerPos.chunkPos, matrixVP);
+		}
+#if 0
+		renderer.deviceContext->VSSetShader(approxVS, 0, 0);
+		renderer.deviceContext->PSSetShader(approxPS, 0, 0);
+		for (auto& c : chunksToDraw) {
+			c->drawApprox(drawCBuffer);
+		}
+		renderer.deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+#endif
+		renderer.deviceContext->VSSetShader(blockVS, 0, 0);
+		renderer.deviceContext->PSSetShader(blockPS, 0, 0);
+		for (auto& c : chunksToDraw) {
+			c->draw(drawCBuffer);
 		}
 		//for (auto& c : world.loadedChunks) {
 		//	drawChunk(c.second);
@@ -1922,7 +1891,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		V3i breakPos = placePos;
 		{
 			Hit hit;
-			if (raycast(cameraPos, cameraPos + viewDir * 3, hit, placePos, [](const Block& b) {return b.id != BLOCK_AIR; })) {
+			if (raycast(cameraPos, cameraPos + viewDir * 3, hit, placePos, [](const BlockID& b) {return b != BLOCK_AIR; })) {
 				breakPos = placePos;
 				placePos += (V3i)hit.n;
 				renderer.deviceContext->OMSetBlendState(alphaBlend, blendFactor, 0xFFFFFFFF);
@@ -1934,11 +1903,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 				blockMesh.draw(renderer);
 				renderer.deviceContext->OMSetBlendState(0, blendFactor, 0xFFFFFFFF);
 				if (input.mouseDown(0)) {
-					if (world.setBlock(breakPos + playerPos.chunkPos * CHUNK_SIZE, {BLOCK_AIR}, true))
+					if (world.setBlock(breakPos + playerPos.chunkPos * CHUNK_WIDTH, {BLOCK_AIR}, true))
 						puts("Destroyed!");
 				}
 				if (input.mouseDown(1)) {
-					if (!isInsideBlock(playerPos.relPos, playerDimH, placePos) && world.setBlock(placePos + playerPos.chunkPos * CHUNK_SIZE, {toolBlock}, true))
+					if (!isInsideBlock(playerPos.relPos, playerDimH, placePos) && world.setBlock(placePos + playerPos.chunkPos * CHUNK_WIDTH, {toolBlock}, true))
 						puts("Placed!");
 				}
 			}
@@ -1950,7 +1919,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			renderer.deviceContext->VSSetShader(blitVS, 0, 0);
 			renderer.deviceContext->PSSetShader(blitPS, 0, 0);
 			renderer.deviceContext->PSSetShaderResources(0, 1, &ssRenderTarget.sr);
-			renderer.deviceContext->Draw(3, 0);
+			renderer.draw(3);
 			ID3D11ShaderResourceView* null = 0;
 			renderer.deviceContext->PSSetShaderResources(0, 1, &null);
 		}
@@ -1991,13 +1960,24 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 #else
 		DHR(renderer.swapChain->Present(1, 0));
 #endif
+		static u32 meshesBuiltInSec = 0;
+		static f32 generateMS = 0;
+		static f32 secondTimer = 0;
 
-		auto [value, unit] = normalizeBytes<double>(vramUsage.load());
+		secondTimer += targetFrameTime;
+		if (secondTimer >= 1) {
+			secondTimer -= 1;
+			generateMS = (f32)generateTime / generateCount / counterFrequency * 1000.f;
+			meshesBuiltInSec = meshesBuilt.exchange(0);
+		}
+		auto ram = ramUsage.load();
+		auto [ramValue, ramUnit] = normalizeBytes<double>(ram);
+		auto [vramValue, vramUnit] = normalizeBytes<double>(vramUsage.load());
 		debugGenerateMutex.lock();
-		sprintf(windowTitle, "gstorm - Position: (%i/%i/%i) (%.2f/%.2f/%.2f), Chunks visible: %u, Gen. time: %.3fms, VRAM usage: %.3f %s", 
+		sprintf(windowTitle, "gstorm - Position: (%i/%i/%i) (%.2f/%.2f/%.2f), RAM usage: %.3f %s, VRAM usage: %.3f %s, Draws: %u/f, Gen. time: %.3fms/s, Loaded chunks: %zu, Meshes built: %u/s", 
 				playerPos.chunkPos.x, playerPos.chunkPos.y, playerPos.chunkPos.z,
 				playerPos.relPos.x, playerPos.relPos.y, playerPos.relPos.z,
-				chunksVisible, generateMS, value, unit);
+				ramValue, ramUnit, vramValue, vramUnit, renderer.getDrawCalls(), generateMS, ram / (CHUNK_SIZE + sizeof(Chunk)), meshesBuiltInSec);
 		debugGenerateMutex.unlock();
 		SetWindowText(window.hwnd, windowTitle);
 	}
@@ -2007,8 +1987,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	DestroyWindow(window.hwnd);
 	puts("Waiting for chunk loader thread...");
 	chunkLoader.join();
-	puts("Waiting for mesh generator thread...");
-	meshGenerator.join();
+#ifndef DISABLE_MESH
+	puts("Waiting for mesh generator threads...");
+	for(auto& t : meshGenerators)
+		t.join();
+#endif
 
 	world.save();
 	/*{

@@ -11,25 +11,32 @@
 using FilePos = u64;
 namespace BorisHash {
 
-#define HASH_BUCKET_COUNT 65536
-#define HASH_ENTRIES_PER_BLOCK 32
+#define HASH_BUCKET_COUNT 64
+#define HASH_ENTRIES_PER_BLOCK 4
 #define HASH_PATH DATA "save/hash"
 
-u32 makeHash(V3i id) {
-	return std::hash<V3i>{}(id) % HASH_BUCKET_COUNT;
+u32 makeHash(V3i key) {
+	return std::hash<V3i>{}(key) % HASH_BUCKET_COUNT;
 }
 
 FILE* file;
+#pragma pack(push, 1)
 struct Entry {
-	V3i worldPos {INVALID_BLOCK_POS,0,0};
-	FilePos filePos = 1;
+	V3i key {0,0,0};
+	FilePos filePos = FILEPOS_INVALID;
 	bool invalid() {
-		return worldPos.x == INVALID_BLOCK_POS;
+		//return key.x == INT_MIN;
+		return filePos == FILEPOS_INVALID;
 	}
 };
+#pragma pack(pop)
 struct Block {
-	FilePos nextBlock = 0, prevBlock = 0;
+	FilePos nextBlock = 0;
+#if HASH_ENTRIES_PER_BLOCK == 1
+	Entry entry {};
+#else
 	Entry entries[HASH_ENTRIES_PER_BLOCK] {};
+#endif
 };
 
 Block readBlock(FilePos position) {
@@ -48,103 +55,78 @@ FilePos getFileSize() {
 	_fseeki64(file, 0, SEEK_END);
 	return _ftelli64(file);
 }
-
-void truncateFile(FilePos size) {
-	FILE* f = fopen(HASH_PATH, "r+");
-	assert(f);
-	assert(_chsize_s(fileno(f), size) == 0);
-	fclose(f);
-}
-
-struct bucket {
+struct Bucket {
 	FilePos firstBlockPos = 0, lastBlockPos = 0;
-	bool hasStudent(V3i zachetka) {
-		FilePos currentBlock = firstBlockPos;
-		while (currentBlock) {
-			Block searchBlock = {};
-			searchBlock = readBlock(currentBlock);
-			for (int i = 0; i < HASH_ENTRIES_PER_BLOCK; ++i) {
-				if (searchBlock.entries[i].invalid())
+	FilePos find(V3i key) {
+		FilePos currentBlockPos = firstBlockPos;
+		while (currentBlockPos) {
+			auto currentBlock = readBlock(currentBlockPos);
+			for (int i = 0; i < HASH_ENTRIES_PER_BLOCK; i++) {
+				if (currentBlock.entries[i].invalid())
 					break;
-				if (searchBlock.entries[i].worldPos == zachetka)
-					return true;
+				if (currentBlock.entries[i].key == key) 
+					return currentBlock.entries[i].filePos;
 			}
-			currentBlock = searchBlock.nextBlock;
+			currentBlockPos = currentBlock.nextBlock;
 		}
-		return false;
+		return FILEPOS_INVALID;
 	}
-	void add(Entry& stud) {
-		//__debugbreak();//точка останова
-		assert(!hasStudent(stud.worldPos));
+	void add(Entry& entry) {
+		auto duplicate = find(entry.key);
+		assert(duplicate == FILEPOS_INVALID); 
 		if (firstBlockPos == 0) {
 			Block newBlock = {};
-			newBlock.entries[0] = stud;
-			_fseeki64(file, 0, SEEK_END);
-			firstBlockPos = lastBlockPos = _ftelli64(file);
-			assert(firstBlockPos);
-			assert(fwrite(&newBlock, sizeof(Block), 1, file) != 0);
+			newBlock.entries[0] = entry;
+			firstBlockPos = lastBlockPos = getFileSize();
+			writeBlock(newBlock, firstBlockPos);
 		}
 		else {
-			Block lastBlock = {};
-			lastBlock = readBlock(lastBlockPos);
-			int DefPos = 1;
-			for (; DefPos < 5; DefPos++)
-				if (lastBlock.entries[DefPos].invalid())
-					break;
-			if (DefPos == 5) {
-				lastBlock.nextBlock = getFileSize();
-				writeBlock(lastBlock, lastBlockPos);
-				lastBlock = {};
-				lastBlock.entries[0] = stud;
-				lastBlock.prevBlock = lastBlockPos;
-				lastBlockPos = getFileSize();
-				writeBlock(lastBlock, lastBlockPos);
-			}
-			else {
-				lastBlock.entries[DefPos] = stud;
-				writeBlock(lastBlock, lastBlockPos);
-			}
-		}
-	}
-	FilePos find(V3i id) {
-		FilePos currentBlock = firstBlockPos;
-		while (currentBlock) {
-			auto searchBlock = readBlock(currentBlock);
-			for (int i = 0; i < HASH_ENTRIES_PER_BLOCK; i++) {
-				if (searchBlock.entries[i].invalid())
-					break;
-				if (searchBlock.entries[i].worldPos == id) {
-					return searchBlock.entries[i].filePos;
+			Block lastBlock = readBlock(lastBlockPos);
+			int targetIdx = 1;
+			for (; targetIdx < HASH_ENTRIES_PER_BLOCK; targetIdx++) {
+				if (lastBlock.entries[targetIdx].invalid()) {
+					lastBlock.entries[targetIdx] = entry;
+					writeBlock(lastBlock, lastBlockPos);
+					return;
 				}
 			}
-			currentBlock = searchBlock.nextBlock;
+			auto prelastBlockPos = lastBlockPos;
+			auto prelastBlock = readBlock(prelastBlockPos);
+			prelastBlock.nextBlock = getFileSize();
+
+			lastBlockPos = prelastBlock.nextBlock;
+			lastBlock = {};
+			lastBlock.entries[0] = entry;
+
+			writeBlock(prelastBlock, prelastBlockPos);
+			writeBlock(lastBlock, lastBlockPos);
 		}
-		return FILEPOS_NOT_LOADED;
 	}
 };
 
-struct hashMap {
-	bucket buckets[HASH_BUCKET_COUNT];
-	void add(Entry& stud) {
-		buckets[makeHash(stud.worldPos)].add(stud);
+struct Map {
+	Bucket buckets[HASH_BUCKET_COUNT];
+	void add(Entry& entry) {
+		buckets[makeHash(entry.key)].add(entry);
 	}
-	FilePos find(V3i id) {
-		return buckets[makeHash(id)].find(id);
+	FilePos find(V3i key) {
+		return buckets[makeHash(key)].find(key);
 	}
 };
-hashMap map;
+Map map;
 void writeMap() {
 	_fseeki64(file, 0, SEEK_SET);
-	assert(fwrite(&map, sizeof(hashMap), 1, file) != 0);
+	assert(fwrite(&map, sizeof(Map), 1, file) != 0);
 }
 void init() {
 	file = fopen(HASH_PATH, "r+b");
 	if (file) {
-		assert(fread(&map, sizeof(map), 1, file) != 0);
-	} else {
+		assert(fread(&map, sizeof(Map), 1, file) != 0);
+	}
+	else {
 		file = fopen(HASH_PATH, "w+b");
 		assert(file);
-		assert(fwrite(&map, sizeof(map), 1, file) != 0);
+		assert(fwrite(&map, sizeof(Map), 1, file) != 0);
 	}
 }
 void shutdown() {
@@ -160,23 +142,23 @@ void debug() {
 		printf("Bucket # %u, firstBlock: %zu, lastBlock: %zu\n", i, b.firstBlockPos, b.lastBlockPos);
 	}
 	FilePos fileSize = getFileSize();
-	FilePos currentBlock = sizeof(hashMap);
+	FilePos currentBlock = sizeof(Map);
 	while (currentBlock < fileSize) {
 		auto iblock = readBlock(currentBlock);
-		printf("position in file: %zu\nprevBlock: %zu\nnextBlock: %zu\n", currentBlock, iblock.prevBlock, iblock.nextBlock);
+		printf("position in file: %llu\nnextBlock: %llu\n", currentBlock, iblock.nextBlock);
 		for (int i = 0; i < HASH_ENTRIES_PER_BLOCK; ++i) {
 			auto& e = iblock.entries[i];
 			if (e.invalid())
 				break;
 			printf("w: ");
-			std::cout << e.worldPos;
-			printf(", f: %zu\n", e.filePos);
+			std::cout << e.key;
+			printf(", f: %llu\n", e.filePos);
 		}
 		puts("");
 		currentBlock += sizeof(Block);
 	}
 }
-FilePos find(V3i pos) {
-	return map.find(pos);
+FilePos find(V3i key) {
+	return map.find(key);
 }
 }

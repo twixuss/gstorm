@@ -1,6 +1,5 @@
-#ifdef __cplusplus
-#pragma once
-#endif
+#ifndef _BLOCK_VERTEX_H_
+#define _BLOCK_VERTEX_H_
 #define ATLAS_SIZE 32
 #define ATLAS_ENTRY_SIZE (1.0f/ATLAS_SIZE)
 #ifdef __cplusplus
@@ -23,7 +22,7 @@ u32 makeVertexData1(int u, int v) {
 #define V2 float2
 #define DEFINIT
 #endif
-struct Vertex {
+struct BlockVertex {
 	// free 11 bit
 	// position X  - 5 bit
 	// position Y  - 5 bit 
@@ -37,12 +36,20 @@ struct Vertex {
 	u32 data1 DEFINIT;
 
 #ifdef __cplusplus
-	void setPosition(int px, int py, int pz, int pid, int n) {
+	inline static constexpr u32 positionIdOffset = 3;
+	inline static constexpr u32 positionIdMask = 0b111 << positionIdOffset;
+	void setPositionID(int pid) {
+		assert(pid < 8);
+		data0 &= ~positionIdMask;
+		data0 |= pid << positionIdOffset;
+	}
+	void setData0(int px, int py, int pz, int pid, int n) {
 		data0 = makeVertexData0(px, py, pz, pid, n);
 	}
-	void setUv(int u, int v) { 
+	void setData1(int u, int v) { 
 		data1 = makeVertexData1(u, v);
 	}
-	void setUv(V2i uv) { setUv(uv.x, uv.y); }
+	void setData1(V2i uv) { setData1(uv.x, uv.y); }
 #endif
 };
+#endif
