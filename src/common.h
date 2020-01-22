@@ -2,7 +2,13 @@
 #include <stdint.h>
 #include <utility>
 #include <iostream>
-#define assert(x) if(!(x)) {__debugbreak();exit(-1);}
+
+#define assert(x) do{if(!(x)){__debugbreak();exit(-1);}}while(0)
+#ifdef BUILD_RELEASE
+#define assert_dbg(x) 
+#else
+#define assert_dbg(x) assert(x)
+#endif
 
 using i8  = int8_t;
 using i16 = int16_t;
@@ -81,4 +87,9 @@ std::pair<ByteType, const char*> normalizeBytes(Input input) {
 	if (bytes >= 1024) { bytes /= 1024; units = "ZB"; }
 	if (bytes >= 1024) { bytes /= 1024; units = "YB"; }
 	return {bytes, units};
+}
+
+template<class Container, class Elem>
+bool contains(const Container& cont, const Elem& elem) {
+	return std::find(std::begin(cont), std::end(cont), elem) != std::end(cont);
 }

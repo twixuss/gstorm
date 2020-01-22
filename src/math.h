@@ -17,32 +17,34 @@ struct V4i;
 struct V2 {
 	f32 x = 0;
 	f32 y = 0;
-	V2() = default;
-	V2(f32 x, f32 y) : x(x), y(y) {}
-	V2(f32 v) : V2(v, v) {}
+	constexpr V2() = default;
+	constexpr V2(f32 x, f32 y) : x(x), y(y) {}
+	constexpr V2(f32 v) : V2(v, v) {}
 	template<class T>
-	explicit V2(T x, T y) : V2((f32)x, (f32)y) {}
-	explicit V2(V2i b);
-	V2 operator-() const { return {-x,-y}; }
-	V2 operator+(V2 b) const { return {x + b.x,y + b.y}; }
-	V2 operator-(V2 b) const { return {x - b.x,y - b.y}; }
-	V2 operator*(V2 b) const { return {x * b.x,y * b.y}; }
-	V2 operator/(V2 b) const { return {x / b.x,y / b.y}; }
-	V2& operator+=(V2 b) { *this = *this + b; return *this; }
-	V2& operator-=(V2 b) { *this = *this - b; return *this; }
-	V2& operator*=(V2 b) { *this = *this * b; return *this; }
-	V2& operator/=(V2 b) { *this = *this / b; return *this; }
-	bool operator==(V2 b) const { return x == b.x && y == b.y; }
-	bool operator!=(V2 b) const { return !(*this == b); }
-	f32 dot(V2 b) const {
+	constexpr explicit V2(T x, T y) : V2((f32)x, (f32)y) {}
+	constexpr explicit V2(V2i b);
+	constexpr V2 operator-() const { return {-x,-y}; }
+	constexpr V2 operator+(V2 b) const { return {x + b.x,y + b.y}; }
+	constexpr V2 operator-(V2 b) const { return {x - b.x,y - b.y}; }
+	constexpr V2 operator*(V2 b) const { return {x * b.x,y * b.y}; }
+	constexpr V2 operator/(V2 b) const { return {x / b.x,y / b.y}; }
+	constexpr V2& operator+=(V2 b) { *this = *this + b; return *this; }
+	constexpr V2& operator-=(V2 b) { *this = *this - b; return *this; }
+	constexpr V2& operator*=(V2 b) { *this = *this * b; return *this; }
+	constexpr V2& operator/=(V2 b) { *this = *this / b; return *this; }
+	constexpr bool operator==(V2 b) const { return x == b.x && y == b.y; }
+	constexpr bool operator!=(V2 b) const { return !(*this == b); }
+	constexpr f32 dot(V2 b) const {
 		return x * b.x + y * b.y;
 	}
-	f32 lengthSqr() const {
+	constexpr f32 lengthSqr() const {
 		return dot(*this);
 	}
 	f32 length() const {
 		return sqrtf(lengthSqr());
 	}
+	constexpr f32* data() { return &x; }
+	constexpr const f32* data() const { return &x; }
 	friend std::ostream& operator<<(std::ostream& os, V2 v) {
 		return os << v.x << ", " << v.y;
 	}
@@ -51,34 +53,34 @@ struct V3 {
 	f32 x = 0;
 	f32 y = 0;
 	f32 z = 0;
-	V3() = default;
-	V3(f32 x, f32 y, f32 z) : x(x), y(y), z(z) {}
-	V3(f32 v) : V3(v, v, v) {}
-	explicit V3(V3i b);
-	V3 operator-() const { return {-x,-y,-z}; }
-	V3 operator+(V3 b) const { return {x + b.x,y + b.y,z + b.z}; }
-	V3 operator-(V3 b) const { return {x - b.x,y - b.y,z - b.z}; }
-	V3 operator*(V3 b) const { return {x * b.x,y * b.y,z * b.z}; }
-	V3 operator/(V3 b) const { return {x / b.x,y / b.y,z / b.z}; }
-	V3& operator+=(V3 b) { *this = *this + b; return *this; }
-	V3& operator-=(V3 b) { *this = *this - b; return *this; }
-	V3& operator*=(V3 b) { *this = *this * b; return *this; }
-	V3& operator/=(V3 b) { *this = *this / b; return *this; }
-	bool operator==(V3 b) const { return x == b.x && y == b.y && z == b.z; }
-	bool operator!=(V3 b) const { return !(*this == b); }
-	f32 dot(V3 b) const {
+	constexpr V3() = default;
+	constexpr V3(f32 x, f32 y, f32 z) : x(x), y(y), z(z) {}
+	constexpr V3(f32 v) : V3(v, v, v) {}
+	constexpr explicit V3(V3i b);
+	constexpr V3 operator-() const { return {-x,-y,-z}; }
+	constexpr V3 operator+(V3 b) const { return {x + b.x,y + b.y,z + b.z}; }
+	constexpr V3 operator-(V3 b) const { return {x - b.x,y - b.y,z - b.z}; }
+	constexpr V3 operator*(V3 b) const { return {x * b.x,y * b.y,z * b.z}; }
+	constexpr V3 operator/(V3 b) const { return {x / b.x,y / b.y,z / b.z}; }
+	constexpr V3& operator+=(V3 b) { *this = *this + b; return *this; }
+	constexpr V3& operator-=(V3 b) { *this = *this - b; return *this; }
+	constexpr V3& operator*=(V3 b) { *this = *this * b; return *this; }
+	constexpr V3& operator/=(V3 b) { *this = *this / b; return *this; }
+	constexpr bool operator==(V3 b) const { return x == b.x && y == b.y && z == b.z; }
+	constexpr bool operator!=(V3 b) const { return !(*this == b); }
+	constexpr f32 dot(V3 b) const {
 		return x * b.x + y * b.y + z * b.z;
 	}
-	f32 lengthSqr() const {
+	constexpr f32 lengthSqr() const {
 		return dot(*this);
 	}
 	f32 length() const {
 		return sqrtf(lengthSqr());
 	}
-	V2 xz() const {
+	constexpr V2 xz() const {
 		return {x, z};
 	}
-	V3 cross(V3 b) const {
+	constexpr V3 cross(V3 b) const {
 		return {
 		   y * b.z - z * b.y,
 		   z * b.x - x * b.z,
@@ -89,6 +91,8 @@ struct V3 {
 	V3 normalized() const {
 		return *this * (1.0f / length());
 	}
+	constexpr f32* data() { return &x; }
+	constexpr const f32* data() const { return &x; }
 	friend std::ostream& operator<<(std::ostream& os, V3 v) {
 		return os << v.x << ", " << v.y << ", " << v.z;
 	}
@@ -115,6 +119,8 @@ struct alignas(16) V4 {
 	V4 operator-() {
 		return {-x,-y,-z,-w};
 	}
+	constexpr f32* data() { return &x; }
+	constexpr const f32* data() const { return &x; }
 	friend std::ostream& operator<<(std::ostream& os, V4 v) {
 		return os << v.x << ", " << v.y << ", " << v.z << ", " << v.w;
 	}
@@ -510,7 +516,8 @@ template<class T>
 T clamp(T a, T mi, T ma) {
 	return min(max(a, mi), ma);
 }
-f32 lerp(f32 a, f32 b, f32 t) {
+template<class T>
+T lerp(T a, T b, f32 t) {
 	return a + (b - a) * t;
 }
 f32 coserp(f32 a, f32 b, f32 t) {
@@ -716,4 +723,13 @@ bool raycastBlock(V3 a, V3 b, V3 blk, Hit& hit, V3 blockDimensions) {
 		return false;
 	hit = hits[min];
 	return true;
+}
+template<class T, size_t size>
+T linearSample(const T (&arr)[size], float t) {
+	f32 f = frac(t) * size;
+	int a = (int)f;
+	int b = a + 1;
+	if (b == size) 
+		b = 0;
+	return lerp(arr[a], arr[b], frac(f));
 }

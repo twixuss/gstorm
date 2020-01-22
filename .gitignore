@@ -2,6 +2,7 @@
 /*/
 !/data/
 /data/save/*
+/data/textures/dev/*
 !/dep/
 !/src/
 !/.gitignore

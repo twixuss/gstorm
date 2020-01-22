@@ -23,16 +23,36 @@ struct RenderTarget {
 	ID3D11RenderTargetView* rt = 0;
 	ID3D11ShaderResourceView* sr = 0;
 	ID3D11Texture2D* tex = 0;
-	void Release() {
+	RenderTarget() = default;
+	RenderTarget(const RenderTarget& other) { *this = other; }
+	RenderTarget(RenderTarget&& other) { *this = std::move(other); }
+	RenderTarget& operator=(const RenderTarget&) = default;
+	RenderTarget& operator=(RenderTarget&& other) {
+		if (tex) {
+			release();
+		}
+		rt = other.rt;
+		sr = other.sr;
+		tex = other.tex;
+		other.zero();
+		return *this;
+	}
+	~RenderTarget() {
+		if (tex) {
+			release();
+			zero();
+		}
+	}
+private:
+	void release() {
 		tex->Release();
 		rt->Release();
 		sr->Release();
+	}
+	void zero() {
 		tex = 0;
 		rt = 0;
 		sr = 0;
-	}
-	operator bool() {
-		return tex;
 	}
 };
 struct Renderer {
@@ -63,17 +83,17 @@ struct Renderer {
 		deviceContext->Draw(vertexCount, offset);
 		++drawCalls;
 	}
-	ID3D11VertexShader* createVertexShader(wchar_t const* path) {
+	ID3D11VertexShader* createVertexShader(wchar_t const* path, const D3D_SHADER_MACRO* defines = 0) {
 		ID3DBlob* blob = 0;
-		DHR(compileShader(path, "vMain", "vs_5_0", &blob));
+		DHR(compileShader(path, defines, "vMain", "vs_5_0", &blob));
 		ID3D11VertexShader* vertexShader;
 		DHR(device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), 0, &vertexShader));
 		blob->Release();
 		return vertexShader;
 	}
-	ID3D11PixelShader* createPixelShader(wchar_t const* path) {
+	ID3D11PixelShader* createPixelShader(wchar_t const* path, const D3D_SHADER_MACRO* defines = 0) {
 		ID3DBlob* blob = 0;
-		DHR(compileShader(path, "pMain", "ps_5_0", &blob));
+		DHR(compileShader(path, defines, "pMain", "ps_5_0", &blob));
 		ID3D11PixelShader* pixelShader;
 		DHR(device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), 0, &pixelShader));
 		blob->Release();
@@ -202,15 +222,12 @@ struct Renderer {
 		DHR(device->CreateBlendState(&desc, &result));
 		return result;
 	}
-	ID3D11BlendState* createBlendState(D3D11_BLEND_OP op, D3D11_BLEND src, D3D11_BLEND dst) {
-		return createBlendState(op, src, dst, D3D11_BLEND_OP_ADD, D3D11_BLEND_ZERO, D3D11_BLEND_ZERO);
-	}
 
 private:
-	HRESULT compileShader(wchar_t const* path, char const* entry, char const* profile, ID3DBlob** blob) {
+	HRESULT compileShader(wchar_t const* path, const D3D_SHADER_MACRO* defines, char const* entry, char const* profile, ID3DBlob** blob) {
 		ID3DBlob* errors = 0;
-		HRESULT hr = D3DCompileFromFile(path, 0, D3D_COMPILE_STANDARD_FILE_INCLUDE, entry, profile,
-										D3DCOMPILE_OPTIMIZATION_LEVEL3 | D3DCOMPILE_WARNINGS_ARE_ERRORS, 
+		HRESULT hr = D3DCompileFromFile(path, defines, D3D_COMPILE_STANDARD_FILE_INCLUDE, entry, profile,
+										D3DCOMPILE_OPTIMIZATION_LEVEL3, 
 										0, blob, &errors);
 		if (errors) {
 			puts("Compilation failed");

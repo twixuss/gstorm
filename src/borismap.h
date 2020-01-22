@@ -42,7 +42,7 @@ struct Block {
 Block readBlock(FilePos position) {
 	_fseeki64(file, position, SEEK_SET);
 	Block result;
-	assert(fread(&result, sizeof(Block), 1, file) != 0)
+	assert(fread(&result, sizeof(Block), 1, file) != 0);
 	return result;
 }
 
@@ -120,6 +120,7 @@ void writeMap() {
 }
 void init() {
 	file = fopen(HASH_PATH, "r+b");
+	//file = 0; // !!!!!!!!!!!!!!!!!!!!!!!!!!!!! TODO DEBUG
 	if (file) {
 		assert(fread(&map, sizeof(Map), 1, file) != 0);
 	}
