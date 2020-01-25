@@ -29,8 +29,9 @@ cbuffer frame : register(b1) {
 cbuffer scene : register(b2) {
 	float fogDistance;
 }
-cbuffer blit : register(b3) {
+cbuffer screen : register(b3) {
 	float2 sampleOffset;
+	float2 invScreenSize;
 }
 float getFog(float dist) {
 	return min(dist / fogDistance, 1);

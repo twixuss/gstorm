@@ -34,6 +34,7 @@
 #define FILEPOS_INVALID ((FilePos)1)
 #define FILEPOS_APPEND ((FilePos)2)
 #include "borismap.h"
+#include <concurrent_queue.h>
 struct InputState {
 	V2i mousePosition;
 	V2i mouseDelta;
@@ -67,35 +68,23 @@ struct Window {
 // Thread #1 should only push
 // Thread #2 should process and clear current buffer, then swap the pointers
 template<class T>
-struct DoubleQueue {
+struct ConcurrentQueue {
 	void push(T chunk) {
 		std::unique_lock l(mutex);
-		next->push_back(chunk);
+		buffer.push(chunk);
 	}
-	void swap() {
+	std::optional<T> pop() {
 		std::unique_lock l(mutex);
-		std::swap(current, next);
-	}
-	bool empty() { 
-		if (current->empty()) {
-			if (next->empty()) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(10));
-				return true;
-			}
-			swap();
+		if (!buffer.size()) {
+			return {};
 		}
-		return false;
+		DEFER {
+			buffer.pop();
+		};
+		return buffer.front();
 	}
-	size_t size() const { return current->size(); }
-	void clear() { current->clear(); }
-	auto begin() { return current->begin(); }
-	auto end() { return current->end(); }
-	const auto begin() const { return current->begin(); }
-	const auto end() const { return current->end(); }
 private:
-	std::deque<T> buffers[2];
-	std::deque<T>* current = buffers;
-	std::deque<T>* next = buffers + 1;
+	std::queue<T> buffer;
 	std::mutex mutex;
 };
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -227,8 +216,9 @@ struct alignas(16) FrameCBuffer {
 struct alignas(16) SceneCBuffer {
 	f32 fogDistance = 0;
 };
-struct alignas(16) BlitCBuffer {
+struct alignas(16) ScreenCBuffer {
 	V2 sampleOffset;
+	V2 invScreenSize;
 };
 template<size_t slot, class Data>
 struct CBuffer : Data {
@@ -829,20 +819,18 @@ int maxDistance(V3i a, V3i b) {
 #else
 #define HOT_DIST 1
 #endif
-#define MESH_QUEUE_COUNT 1
 struct World {
 	std::unordered_map<V3i, Chunk*> loadedChunks;
-	DoubleQueue<Chunk*> loadQueue, unloadQueue, meshQueues[MESH_QUEUE_COUNT] {};
-	ChunkVertex* vertexPools[MESH_QUEUE_COUNT + 1]; // extra one for immediate mesh build
-	std::atomic_uint meshQueueIdx = 0;
-	std::atomic_bool loadQueueNoPush = false, meshQueueNoPush = false;
+	ConcurrentQueue<Chunk*> loadQueue, unloadQueue;
+	ChunkVertex* vertexPools[2]; // extra one for immediate mesh build
+	std::atomic_bool loadQueueNoPush = false;
 	std::vector<Chunk*> chunksWantedToDelete;
 	Renderer& renderer;
 	const V3i& playerChunk;
 	const int drawDistance;
 	const int hotDistance;
 	std::thread chunkLoader;
-	std::array<std::thread, MESH_QUEUE_COUNT> meshGenerators;
+	FILE* saveFile;
 	World(Renderer& renderer, const V3i& playerChunk, int drawDistance) : renderer(renderer), playerChunk(playerChunk), drawDistance(drawDistance), hotDistance(min(drawDistance, HOT_DIST)) {
 		int w = drawDistance * 2 + 1;
 		loadedChunks.reserve(w * w * w);
@@ -850,24 +838,12 @@ struct World {
 			pool = (ChunkVertex*)malloc(MAX_CHUNK_VERTEX_COUNT * sizeof(ChunkVertex));
 		}
 		BorisHash::init();
+		saveFile = openFileRW(SAVE_FILE);
 		//BorisHash::debug();
 		chunkLoader = std::thread {[this]() {
 			SetThreadName((DWORD)-1, "Chunk loader");
 			while (updateChunks());
 		}};
-		//#define DISABLE_MESH
-#ifndef DISABLE_MESH
-		for (u32 i=0; i < MESH_QUEUE_COUNT; ++i) {
-			meshGenerators[i] = std::thread {[this, i]() {
-				{
-					char buffer[64];
-					sprintf(buffer, "Mesh generator #%u", i);
-					SetThreadName((DWORD)-1, buffer);
-				}
-				while (generateMeshes(i));
-			}};
-		}
-#endif
 	}
 	void seeChunk(V3i pos) {
 		getChunkUnchecked(pos);
@@ -902,22 +878,16 @@ struct World {
 	void save() {
 		puts("Waiting for chunk loader thread...");
 		chunkLoader.join();
-#ifndef DISABLE_MESH
-		puts("Waiting for mesh generator threads...");
-		for (auto& t : meshGenerators)
-			t.join();
-#endif
 
-		auto chunkFile = openFileRW(SAVE_FILE);
 		size_t progress = 0;
 		for (auto& [position, chunk] : loadedChunks) {
-			chunk->save(chunkFile);
+			chunk->save(saveFile);
 			chunk->free();
 			delete chunk;
 			printf("Saving world... %zu%%\r", progress++ * 100 / loadedChunks.size());
 		}
 		puts("Saving world... 100%");
-		fclose(chunkFile);
+		fclose(saveFile);
 		BorisHash::shutdown();
 	}
 	std::array<Chunk*, 6> getNeighbors(Chunk* c) {
@@ -942,18 +912,12 @@ struct World {
 			chunksWantedToDelete.push_back(c);
 		}
 	}
-	void pushMeshQueue(Chunk* c, DoubleQueue<Chunk*>& queue) {
-		++c->userCount;
-		queue.push(c);
-	}
 	// chunk loader thread
 	bool loadChunks() {
-		auto file = fopen(SAVE_FILE, "rb");
-		DEFER { if(file) fclose(file);};
-
-		auto processQueue = [&]() {
+		while(1) {
 			//printf("To load: %zu\n", loadQueue.size());
-			for (auto& c : loadQueue) {
+			if (auto oc = loadQueue.pop(); oc.has_value()) {
+				auto c = oc.value();
 				DEFER {
 					--c->userCount;
 				};
@@ -965,44 +929,34 @@ struct World {
 				}
 				if (loadQueueNoPush)
 					continue;
-				if (!file || !c->load(file)) {
+				if (!saveFile || !c->load(saveFile)) {
 					c->generate();
 				}
 				//c->buildApproxMesh();
-				auto& queue = meshQueues[meshQueueIdx];
-				pushMeshQueue(c, queue);
+				buildMesh(c);
 				for (auto& n : getNeighbors(c)) {
 					if (n) {
-						pushMeshQueue(n, queue);
+						buildMesh(n);
 					}
 				}
-				if (++meshQueueIdx == MESH_QUEUE_COUNT)
-					meshQueueIdx = 0;
 			}
-			loadQueue.clear();
-			loadQueue.swap();
-		};
-
-		if (loadQueueNoPush) {
-			processQueue();
-			processQueue();
-			meshQueueNoPush = true;
-			return false;
+			else {
+				break;
+			}
 		}
-		if (loadQueue.empty()) 
-			return true;
-		processQueue();
-		return true;
+		return !loadQueueNoPush;
 	}
 	void unloadChunks() {
-		if (unloadQueue.empty()) 
-			return;
 		//printf("To save: %zu\n", unloadQueue.size());
-		for (auto& c : unloadQueue) {
-			wantToDelete(c);
+		while (1) {
+			if (auto oc = unloadQueue.pop(); oc.has_value()) {
+				auto c = oc.value();
+				wantToDelete(c);
+			}
+			else {
+				break;
+			}
 		}
-		unloadQueue.clear();
-		unloadQueue.swap();
 
 		std::vector<Chunk*> toDelete;
 		std::vector<Chunk*> notToDelete;
@@ -1019,42 +973,18 @@ struct World {
 		}
 		chunksWantedToDelete = std::move(notToDelete);
 		//printf("To delete: %zu\n", toDelete.size());
-		auto file = openFileRW(SAVE_FILE);
 		for (auto& c : toDelete) {
-			c->save(file);
+			c->save(saveFile);
 			c->free();
 			delete c;
 		}
-		fclose(file);
 	}
 	bool updateChunks() {
 		unloadChunks();
 		return loadChunks();
 	}
-	bool generateMeshes(u32 idx) {
-		auto& meshQueue = meshQueues[idx];
-		auto processQueue = [&]() {
-			//printf("To mesh: %zu\n", meshQueue.size());
-			for (auto& c : meshQueue) {
-				DEFER {
-					--c->userCount;
-				};
-				if (meshQueueNoPush)
-					continue;
-				c->generateMesh(vertexPools[idx], getNeighbors(c));
-			}
-			meshQueue.clear();
-			meshQueue.swap();
-		};
-		if (meshQueueNoPush) {
-			processQueue();
-			processQueue();
-			return false;
-		}
-		if (meshQueue.empty())
-			return true;
-		processQueue();
-		return true;
+	void buildMesh(Chunk* c) {
+		c->generateMesh(vertexPools[0], getNeighbors(c));
 	}
 	Chunk* findChunk(V3i pos) {
 		if (auto it = loadedChunks.find(pos); it != loadedChunks.end())
@@ -1089,10 +1019,10 @@ struct World {
 		if (c->setBlock(relPos, blk)) {
 			auto updateMesh = [this, immediate](Chunk* chunk) {
 				if (immediate) {
-					chunk->generateMesh(vertexPools[MESH_QUEUE_COUNT], getNeighbors(chunk));
+					chunk->generateMesh(vertexPools[1], getNeighbors(chunk));
 				}
 				else
-					pushMeshQueue(chunk, meshQueues[0]);
+					buildMesh(chunk);
 			};
 			updateMesh(c);
 			auto onBoundary = [](V3i p) {
@@ -1252,7 +1182,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 #endif
 
 	int chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
-	int superSampleCount = 1;
+	int superSampleWidth = 1;
 
 	puts(R"(		Меню
 	1 - Начать
@@ -1279,9 +1209,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
 		}
 		puts("Сглаживание [1,4]\n\t1 - Нет\n\t2 - 4x\n\t3 - 9x\n\t4 - 16x");
-		std::cin >> superSampleCount;
-		if (superSampleCount < 1 || superSampleCount > 4) {
-			superSampleCount = 1;
+		std::cin >> superSampleWidth;
+		if (superSampleWidth < 1 || superSampleWidth > 4) {
+			superSampleWidth = 1;
 			puts("так низя. ставлю 1");
 		}
 	}
@@ -1317,7 +1247,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		assert(0);
 	}
 
-	Renderer renderer(window.hwnd, window.clientSize * superSampleCount);
+	Renderer renderer(window.hwnd, window.clientSize * superSampleWidth);
 	renderer.deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
 	ID3D11RenderTargetView* backBuffer = 0;
@@ -1340,7 +1270,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	ID3D11PixelShader*  blitPS = 0;
 	{
 		char buf[2] {};
-		buf[0] = (char)('0' + superSampleCount);
+		buf[0] = (char)('0' + superSampleWidth);
 		D3D_SHADER_MACRO defines[2] {
 			{"BLIT_SS", buf},
 			{}
@@ -1351,10 +1281,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 	f32 farClipPlane = 1000;
 
-	CBuffer<0, DrawCBuffer>  drawCBuffer {renderer};
-	CBuffer<1, FrameCBuffer> frameCBuffer{renderer};
-	CBuffer<2, SceneCBuffer> sceneCBuffer{renderer};
-	CBuffer<3, BlitCBuffer>  blitCBuffer {renderer};
+	CBuffer<0, DrawCBuffer>   drawCBuffer  {renderer};
+	CBuffer<1, FrameCBuffer>  frameCBuffer {renderer};
+	CBuffer<2, SceneCBuffer>  sceneCBuffer {renderer};
+	CBuffer<3, ScreenCBuffer> screenCBuffer{renderer};
 
 	sceneCBuffer.fogDistance = (f32)chunkDrawDistance * CHUNK_WIDTH;
 
@@ -1367,9 +1297,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	sceneCBuffer.createImmutable();
 	sceneCBuffer.bindV();
 	sceneCBuffer.bindP();
-	blitCBuffer.createDynamic();
-	blitCBuffer.bindV();
-	blitCBuffer.bindP();
+	screenCBuffer.createDynamic();
+	screenCBuffer.bindV();
+	screenCBuffer.bindP();
 
 	M4 projection;
 
@@ -1434,7 +1364,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	ID3D11BlendState* sunBlend = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_INV_DEST_ALPHA, D3D11_BLEND_DEST_ALPHA,
 														   D3D11_BLEND_OP_ADD, D3D11_BLEND_ZERO, D3D11_BLEND_ONE);
 
-	RenderTarget ssRenderTarget;
+	RenderTarget renderTargets[2];
 
 	f32 blendFactor[4] {1,1,1,1};
 
@@ -1856,11 +1786,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		static constexpr V3 sunColors[] {
 			{0, 0, 0},
 			{0, 0, 0},
-			{1,.5, 0},
+			{1.5,.75, 0},
 			{1, 1, 1},
 			{1, 1, 1},
 			{1, 1, 1},
-			{1,.5, 0},
+			{1.5,.75, 0},
 			{0, 0, 0},
 		};
 		frameCBuffer.camPos = cameraPos;
@@ -1892,25 +1822,28 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			desc.ArraySize = 1;
 			desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 			desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-			desc.Width = window.clientSize.x * superSampleCount;
-			desc.Height = window.clientSize.y * superSampleCount;
+			desc.Width = window.clientSize.x * superSampleWidth;
+			desc.Height = window.clientSize.y * superSampleWidth;
 			desc.MipLevels = 1;
 			desc.SampleDesc = {1, 0};
 			DHR(renderer.device->CreateTexture2D(&desc, 0, &depthTex));
 			DHR(renderer.device->CreateDepthStencilView(depthTex, 0, &depthView));
 
-			projection = M4::projection((f32)window.clientSize.x / window.clientSize.y, DEG2RAD(90), 0.01f, farClipPlane);
+			projection = M4::projection((f32)window.clientSize.x / window.clientSize.y, DEG2RAD(75), 0.01f, farClipPlane);
 
-			ssRenderTarget = renderer.createRenderTarget(window.clientSize * superSampleCount);
+			for (auto& rt : renderTargets)
+				rt = renderer.createRenderTarget(window.clientSize * superSampleWidth);
 
 			f32 ssOff = 0.0f;
-			switch (superSampleCount) {
+			switch (superSampleWidth) {
 				case 2: ssOff = 0.25f; break;
 				case 3: ssOff = 1.0f / 3.0f; break;
 				case 4: ssOff = 0.125f; break;
 			}
-			blitCBuffer.sampleOffset = V2 {1} / V2 {window.clientSize} * ssOff;
-			blitCBuffer.update();
+			auto invScreenSize = V2 {1} / V2 {window.clientSize};
+			screenCBuffer.invScreenSize = invScreenSize / (f32)superSampleWidth;
+			screenCBuffer.sampleOffset = invScreenSize * ssOff;
+			screenCBuffer.update();
 		}
 
 		struct FrustumPlanes {
@@ -1970,10 +1903,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			}
 		}
 
-		renderer.deviceContext->OMSetRenderTargets(1, &ssRenderTarget.rt, depthView);
-		renderer.deviceContext->ClearRenderTargetView(ssRenderTarget.rt, V4{1}.data());
+		renderer.deviceContext->ClearRenderTargetView(backBuffer, V4 {1}.data());
+		renderer.deviceContext->ClearRenderTargetView(renderTargets[0].rt, V4 {1}.data());
+		renderer.deviceContext->ClearRenderTargetView(renderTargets[1].rt, V4 {1}.data());
 		renderer.deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH, 1.0f, 0);
-		renderer.setViewport(window.clientSize* superSampleCount);
+
+		renderer.deviceContext->OMSetRenderTargets(1, &renderTargets[0].rt, depthView);
+		renderer.setViewport(window.clientSize* superSampleWidth);
 
 		renderer.deviceContext->PSSetShaderResources(2, 1, &atlasTex);
 		renderer.deviceContext->PSSetShaderResources(3, 1, &atlasNormalTex);
@@ -2017,31 +1953,34 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 				}
 			}
 		}
-		renderer.setViewport(window.clientSize);
 		drawCBuffer.mvp = matrixCamRotProj;
 		drawCBuffer.solidColor = 1;
 		drawCBuffer.update();
 
 		// SUN
-		//renderer.deviceContext->OMSetRenderTargets(1, &sunRenderTarget.rt, 0);
-		//renderer.deviceContext->VSSetShader(sunVS, 0, 0);
-		//renderer.deviceContext->PSSetShader(sunPS, 0, 0);
-		//renderer.draw(36);
+		renderer.deviceContext->VSSetShader(sunVS, 0, 0);
+		renderer.deviceContext->PSSetShader(sunPS, 0, 0);
+		renderer.draw(36);
+
+		renderer.deviceContext->OMSetRenderTargets(1, &renderTargets[1].rt, 0);
+		renderer.deviceContext->PSSetShaderResources(0, 1, &renderTargets[0].sr);
 
 		// SKY
-		renderer.deviceContext->OMSetRenderTargets(1, &backBuffer, 0);
 		renderer.deviceContext->VSSetShader(skyVS, 0, 0);
 		renderer.deviceContext->PSSetShader(skyPS, 0, 0);
 		renderer.draw(36);
 
+		renderer.setViewport(window.clientSize);
+		renderer.deviceContext->OMSetRenderTargets(1, &backBuffer, 0);
+		
 		// BLIT
 		renderer.setViewport(window.clientSize);
 		renderer.deviceContext->VSSetShader(blitVS, 0, 0);
 		renderer.deviceContext->PSSetShader(blitPS, 0, 0);
-		renderer.deviceContext->PSSetShaderResources(0, 1, &ssRenderTarget.sr);
-		renderer.deviceContext->OMSetBlendState(alphaBlendInvertedOverwrite, blendFactor, 0xFFFFFFFF);
+		renderer.deviceContext->PSSetShaderResources(0, 1, &renderTargets[1].sr);
+		//renderer.deviceContext->OMSetBlendState(alphaBlendInvertedOverwrite, blendFactor, 0xFFFFFFFF);
 		renderer.draw(3);
-		renderer.deviceContext->OMSetBlendState(0, blendFactor, 0xFFFFFFFF);
+		//renderer.deviceContext->OMSetBlendState(0, blendFactor, 0xFFFFFFFF);
 
 		ID3D11ShaderResourceView* null = 0;
 		renderer.deviceContext->PSSetShaderResources(0, 1, &null);

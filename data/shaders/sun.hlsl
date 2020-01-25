@@ -51,10 +51,15 @@ void vMain(in uint id : SV_VertexID, out V2P o) {
 	o.position = mul(mvp, float4(position, 1));
 	o.normal = position;
 }
-void pMain(in V2P i, out float4 oColor : SV_Target) {
+float getMask(float NLlin, float fov, float b) {
+	return pow(saturate(NLlin * 180 / (180 - fov)), 180 / (fov * b));
+}
+void pMain(in V2P i, out float4 oColor : SV_Target, out float oDepth : SV_Depth) {
+	oDepth = 0.9999999f;
 	float3 normal = normalize(i.normal);
 	float NL = dot(normal, lightDir);
-	float sun = saturate((NL - 0.999) * 5000);
-	float moon = saturate((-NL - 0.999) * 5000);
-	oColor = float4(lerp(0.8, sunColor, saturate(map(NL,-1,1,-2,2))), sun + moon);
+	float NLlin = 2 / PI * asin(NL);
+	float sun  = getMask( NLlin, 1, 5);
+	float moon = getMask(-NLlin, 1, 2);
+	oColor = float4(lerp(0.8, sunColor, saturate(map(NL,-1,1,-2,2))), 1 - sun - moon);
 }
