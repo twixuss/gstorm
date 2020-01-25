@@ -32,7 +32,7 @@ void pMain(in V2P i, out float4 oColor : SV_Target) {
 	clip(color.a - 0.5f);
 	float3 normalMap = normalTex.Sample(samplerState, i.uv).xyz * 2 - 1;
 	normalMap.xy = mul(i.nrmRot, normalMap.xy) * i.nrmFlip;
-	float3 normal = calcNormal(i.normal, i.tangent, i.bitangent, normalMap);
+	float3 normal = calcNormal(i.normal, i.tangent, i.bitangent, normalize(normalMap));
 	//float3 normal = i.normal;
 	float3 diffuse = color.xyz * (
 		(sunColor * map(dot(normal, lightDir), -1, 1, 0, 1)) +

@@ -71,7 +71,7 @@ template<class T>
 struct ConcurrentQueue {
 	void push(T chunk) {
 		std::unique_lock l(mutex);
-		buffer.push(chunk);
+		buffer.push_back(chunk);
 	}
 	std::optional<T> pop() {
 		std::unique_lock l(mutex);
@@ -79,12 +79,26 @@ struct ConcurrentQueue {
 			return {};
 		}
 		DEFER {
-			buffer.pop();
+			buffer.pop_front();
 		};
 		return buffer.front();
 	}
+	template<class Callback>
+	void process(Callback&& callback) {
+		if (!buffer.size())
+			return;
+		mutex.lock();
+		toProcess.resize(buffer.size());
+		std::copy(buffer.begin(), buffer.end(), toProcess.begin());
+		buffer.clear();
+		mutex.unlock();
+		for (auto& c : toProcess) {
+			callback(c);
+		}
+	}
 private:
-	std::queue<T> buffer;
+	std::vector<T> toProcess;
+	std::deque<T> buffer;
 	std::mutex mutex;
 };
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -303,6 +317,8 @@ i64 buildMeshTime, buildMeshCount;
 std::mutex debugGenerateMutex, debugBuildMeshMutex;
 #define MAX_CHUNK_VERTEX_COUNT (1024 * 1024)
 std::atomic_uint meshesBuilt = 0;
+struct Chunk;
+using Neighbors = std::array<Chunk*, 6>;
 struct Chunk {
 	struct VertexBuffer {
 		ID3D11Buffer* vBuffer = 0;
@@ -472,7 +488,7 @@ struct Chunk {
 		}
 		generated = true;
 		
-		if(1) //if (!saveSpaceOnDisk)
+		if(0) //if (!saveSpaceOnDisk)
 			needToSave = true; // TODO: make option for saving space on disk
 	}
 	/*
@@ -530,7 +546,7 @@ struct Chunk {
 		renderer.draw(approxMesh.vertexCount);
 	}
 	*/
-	void generateMesh(ChunkVertex* vertexPool, const std::array<Chunk*, 6>& neighbors) {
+	void generateMesh(ChunkVertex* vertexPool, const Neighbors& neighbors) {
 		deleteMutex.lock();
 		if (wantedToBeDeleted) {
 			deleteMutex.unlock();
@@ -822,17 +838,18 @@ int maxDistance(V3i a, V3i b) {
 struct World {
 	std::unordered_map<V3i, Chunk*> loadedChunks;
 	ConcurrentQueue<Chunk*> loadQueue, unloadQueue;
+	ConcurrentQueue<std::pair<Chunk*, Neighbors>> meshQueue;
 	ChunkVertex* vertexPools[2]; // extra one for immediate mesh build
-	std::atomic_bool loadQueueNoPush = false;
+	std::atomic_bool stopWork = false;
 	std::vector<Chunk*> chunksWantedToDelete;
 	Renderer& renderer;
 	const V3i& playerChunk;
-	const int drawDistance;
+	const int loadDistance;
 	const int hotDistance;
-	std::thread chunkLoader;
+	std::thread chunkLoader, meshBuilder;
 	FILE* saveFile;
-	World(Renderer& renderer, const V3i& playerChunk, int drawDistance) : renderer(renderer), playerChunk(playerChunk), drawDistance(drawDistance), hotDistance(min(drawDistance, HOT_DIST)) {
-		int w = drawDistance * 2 + 1;
+	World(Renderer& renderer, const V3i& playerChunk, int loadDistance) : renderer(renderer), playerChunk(playerChunk), loadDistance(loadDistance), hotDistance(min(loadDistance, HOT_DIST)) {
+		int w = loadDistance * 2 + 1;
 		loadedChunks.reserve(w * w * w);
 		for (auto& pool : vertexPools) {
 			pool = (ChunkVertex*)malloc(MAX_CHUNK_VERTEX_COUNT * sizeof(ChunkVertex));
@@ -844,6 +861,12 @@ struct World {
 			SetThreadName((DWORD)-1, "Chunk loader");
 			while (updateChunks());
 		}};
+		meshBuilder = std::thread {[this]() {
+			SetThreadName((DWORD)-1, "Mesh builder");
+			while (buildMeshes());
+		}};
+
+
 	}
 	void seeChunk(V3i pos) {
 		getChunkUnchecked(pos);
@@ -861,11 +884,12 @@ struct World {
 		//for (auto& c : toUnsee)
 		//	visibleChunks.erase(c);
 
-		std::vector<Chunk*> chunksToUnload;
-		chunksToUnload.reserve(drawDistance * 2 + 1);
+		static std::vector<Chunk*> chunksToUnload;
+		chunksToUnload.clear();
+		//chunksToUnload.reserve(loadDistance * 2 + 1);
 		for (auto& [pos, c] : loadedChunks) {
 			auto dist = maxDistance(playerChunk, c->position);
-			if (dist > drawDistance) {
+			if (dist > loadDistance) {
 				unloadQueue.push(c);
 				chunksToUnload.push_back(c);
 			}
@@ -878,11 +902,14 @@ struct World {
 	void save() {
 		puts("Waiting for chunk loader thread...");
 		chunkLoader.join();
+		puts("Waiting for mesh builder thread...");
+		meshBuilder.join();
 
 		size_t progress = 0;
 		for (auto& [position, chunk] : loadedChunks) {
 			chunk->save(saveFile);
 			chunk->free();
+			chunk->userCount = 0;
 			delete chunk;
 			printf("Saving world... %zu%%\r", progress++ * 100 / loadedChunks.size());
 		}
@@ -890,17 +917,17 @@ struct World {
 		fclose(saveFile);
 		BorisHash::shutdown();
 	}
-	std::array<Chunk*, 6> getNeighbors(Chunk* c) {
-		std::array<Chunk*, 6> neighbors;
+	Neighbors getNeighbors(Chunk* c) {
+		Neighbors neighbors;
 		neighbors[0] = findChunk(c->position + V3i { 1, 0, 0});
 		neighbors[1] = findChunk(c->position + V3i {-1, 0, 0});
 		neighbors[2] = findChunk(c->position + V3i { 0, 1, 0});
 		neighbors[3] = findChunk(c->position + V3i { 0,-1, 0});
 		neighbors[4] = findChunk(c->position + V3i { 0, 0, 1});
 		neighbors[5] = findChunk(c->position + V3i { 0, 0,-1});
-		for (int i=0; i < 6;++i) {
-			if (neighbors[i] && !neighbors[i]->blocks)
-				neighbors[i] = 0;
+		for (auto& n : neighbors) {
+			if (n && !n->blocks)
+				n = 0;
 		}
 		return neighbors;
 	}
@@ -913,53 +940,50 @@ struct World {
 		}
 	}
 	// chunk loader thread
+	void buildMesh(Chunk* c) {
+		auto neighbors = getNeighbors(c);
+		for (auto n : neighbors)
+			if (!n)
+				return;
+		for (auto n : neighbors)
+			++n->userCount;
+		++c->userCount;
+		meshQueue.push({c, neighbors});
+	}
 	bool loadChunks() {
-		while(1) {
-			//printf("To load: %zu\n", loadQueue.size());
-			if (auto oc = loadQueue.pop(); oc.has_value()) {
-				auto c = oc.value();
-				DEFER {
-					--c->userCount;
-				};
-				if (maxDistance(playerChunk, c->position) > drawDistance) {
-					continue;
-				}
-				else {
-					c->wantedToBeDeleted = false;
-				}
-				if (loadQueueNoPush)
-					continue;
-				if (!saveFile || !c->load(saveFile)) {
-					c->generate();
-				}
-				//c->buildApproxMesh();
-				buildMesh(c);
-				for (auto& n : getNeighbors(c)) {
-					if (n) {
-						buildMesh(n);
-					}
-				}
+		loadQueue.process([this](Chunk* c) {
+			DEFER {
+				--c->userCount;
+			};
+			if (maxDistance(playerChunk, c->position) > loadDistance) {
+				return;
 			}
 			else {
-				break;
+				c->wantedToBeDeleted = false;
 			}
-		}
-		return !loadQueueNoPush;
+			if (stopWork)
+				return;
+			if (!saveFile || !c->load(saveFile)) {
+				c->generate();
+			}
+			buildMesh(c);
+			for (auto& n : getNeighbors(c)) {
+				if (n) {
+					buildMesh(n);
+				}
+			}
+		});
+		return !stopWork;
 	}
 	void unloadChunks() {
-		//printf("To save: %zu\n", unloadQueue.size());
-		while (1) {
-			if (auto oc = unloadQueue.pop(); oc.has_value()) {
-				auto c = oc.value();
-				wantToDelete(c);
-			}
-			else {
-				break;
-			}
-		}
+		unloadQueue.process([this](Chunk* c) {
+			wantToDelete(c);
+		});
 
-		std::vector<Chunk*> toDelete;
-		std::vector<Chunk*> notToDelete;
+		static std::vector<Chunk*> chunksToDelete;
+		static std::vector<Chunk*> chunksNotToDelete;
+		chunksToDelete.clear();
+		chunksNotToDelete.clear();
 		for (auto& c : chunksWantedToDelete) {
 			if (!c->wantedToBeDeleted)
 				continue;
@@ -967,13 +991,12 @@ struct World {
 			auto canDelete = c->userCount == 0;
 			c->deleteMutex.unlock();
 			if(canDelete)
-				toDelete.push_back(c);
+				chunksToDelete.push_back(c);
 			else
-				notToDelete.push_back(c);
+				chunksNotToDelete.push_back(c);
 		}
-		chunksWantedToDelete = std::move(notToDelete);
-		//printf("To delete: %zu\n", toDelete.size());
-		for (auto& c : toDelete) {
+		chunksWantedToDelete = std::move(chunksNotToDelete);
+		for (auto& c : chunksToDelete) {
 			c->save(saveFile);
 			c->free();
 			delete c;
@@ -983,8 +1006,21 @@ struct World {
 		unloadChunks();
 		return loadChunks();
 	}
-	void buildMesh(Chunk* c) {
-		c->generateMesh(vertexPools[0], getNeighbors(c));
+	bool buildMeshes() {
+		meshQueue.process([this](std::pair<Chunk*, Neighbors> pair) {
+			if (stopWork)
+				return;
+			auto c = pair.first;
+			auto neighbors = pair.second;
+			DEFER {
+				--c->userCount;
+				for (auto& n : neighbors) {
+					--n->userCount;
+				}
+			};
+			c->generateMesh(vertexPools[0], neighbors);
+		});
+		return !stopWork;
 	}
 	Chunk* findChunk(V3i pos) {
 		if (auto it = loadedChunks.find(pos); it != loadedChunks.end())
@@ -1215,6 +1251,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			puts("так низя. ставлю 1");
 		}
 	}
+	int chunkLoadDistance = chunkDrawDistance + 1;
 
 	WH::WndClassExA wndClass;
 	wndClass.hInstance = instance;
@@ -1238,6 +1275,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	window.hwnd = CreateWindowExA(0, wndClass.lpszClassName, "Galaxy Storm", WINDOW_STYLE,
 								windowRect.left, windowRect.top, windowRect.width(), windowRect.height(), 0, 0, instance, &window);
 	assert(window.hwnd);
+
+	SetForegroundWindow(window.hwnd);
 
 	RAWINPUTDEVICE RawInputMouseDevice = {};
 	RawInputMouseDevice.usUsagePage = 0x01;
@@ -1370,7 +1409,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 #define PATH_SAVE DATA "world.save"
 
-	World world(renderer, playerPos.chunkPos, chunkDrawDistance);
+	World world(renderer, playerPos.chunkPos, chunkLoadDistance);
 
 #if 0
 	for (int x=-5; x <= 5; ++x) for (int y=-5; y <= 5; ++y) for (int z=-5; z <= 5; ++z) {
@@ -1385,17 +1424,18 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	auto loadWorld = [&]() {
 		//TIMED_SCOPE("LOAD WORLD");
 		auto playerChunk = playerPos.chunkPos;
+		int loadDist = chunkLoadDistance; // +1 because mesh will generate when all neighbors are available
 		//world.loadQueue.mutex.lock();
 #if 0
-		for (int x = chunkDrawDistance; x <= chunkDrawDistance; ++x) {
-			for (int y = chunkDrawDistance; y <= chunkDrawDistance; ++y) {
-				for (int z = chunkDrawDistance; z <= chunkDrawDistance; ++z) {
+		for (int x = loadDist; x <= loadDist; ++x) {
+			for (int y = loadDist; y <= loadDist; ++y) {
+				for (int z = loadDist; z <= loadDist; ++z) {
 					world.seeChunk(playerChunk + V3i {x,y,z});
 				}
 			}
 		}
 #else 
-		for (int r = 0; r <= chunkDrawDistance; ++r) {
+		for (int r = 0; r <= loadDist; ++r) {
 			{
 				int x = -r;
 				while (1) {
@@ -2046,7 +2086,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		debugGenerateMutex.unlock();
 		SetWindowText(window.hwnd, windowTitle);
 	}
-	world.loadQueueNoPush = true;
+	world.stopWork = true;
 	ClipCursor(0);
 	SetCursor(LoadCursorA(0, IDC_ARROW));
 	DestroyWindow(window.hwnd);

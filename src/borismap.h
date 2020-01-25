@@ -11,8 +11,8 @@
 using FilePos = u64;
 namespace BorisHash {
 
-#define HASH_BUCKET_COUNT 64
-#define HASH_ENTRIES_PER_BLOCK 4
+#define HASH_BUCKET_COUNT 65536
+#define HASH_ENTRIES_PER_BLOCK 16
 #define HASH_PATH DATA "save/hash"
 
 u32 makeHash(V3i key) {
