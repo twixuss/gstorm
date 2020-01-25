@@ -54,10 +54,6 @@ FILE* openFileRW(char const* path) {
 	return file;
 }
 
-template<class ...T>
-void Print(const T&... t) {
-	int dummy[] = {(std::cout << t, 0)...};
-}
 template<class T>
 void minmax(T a, T b, T& omin, T& omax) {
 	if (a < b) {
