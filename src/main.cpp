@@ -7,6 +7,11 @@
 #pragma warning(disable:4324)//align padding
 #pragma warning(disable:4359)//align smaller
 #pragma warning(disable:4201)//no name
+#include "common.h"
+#include "math.h"
+#include "math.cpp"
+#include "winhelper.h"
+#include "d3d11helper.h"
 #include <time.h>
 #include <stdio.h>
 #include <vector>
@@ -20,11 +25,6 @@
 #include <functional>
 #include <optional>
 #include <array>
-#include "common.h"
-#include "math.h"
-#include "math.cpp"
-#include "winhelper.h"
-#include "d3d11helper.h"
 #include <timeapi.h>
 #pragma comment(lib, "winmm")
 #define WINDOW_STYLE (WS_OVERLAPPEDWINDOW | WS_VISIBLE)
@@ -34,7 +34,6 @@
 #define FILEPOS_INVALID ((FilePos)1)
 #define FILEPOS_APPEND ((FilePos)2)
 #include "borismap.h"
-#include <concurrent_queue.h>
 struct InputState {
 	V2i mousePosition;
 	V2i mouseDelta;
@@ -200,7 +199,7 @@ bool isPhysical(BlockID id) {
 	return true;
 }
 
-#define CHUNK_WIDTH 32
+#define CHUNK_WIDTH 64
 #define CHUNK_VOLUME (CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_WIDTH)
 #define FOR_BLOCK_IN_CHUNK 		    \
 for (int z=0; z < CHUNK_WIDTH; ++z) \
@@ -294,7 +293,7 @@ Mesh blockMesh;
 #define SAVE_FILE DATA "save/world"
 void printChunk(BlockID*, V3i);
 V3i chunkPosFromBlock(V3i pos) {
-	return floor(pos, CHUNK_WIDTH) / CHUNK_WIDTH;
+	return floor(pos, CHUNK_WIDTH);
 }
 V3i chunkPosFromBlock(V3 pos) {
 	return chunkPosFromBlock(V3i {pos});
@@ -315,7 +314,7 @@ std::atomic<size_t> ramUsage, vramUsage;
 i64 generateTime, generateCount;
 i64 buildMeshTime, buildMeshCount;
 std::mutex debugGenerateMutex, debugBuildMeshMutex;
-#define MAX_CHUNK_VERTEX_COUNT (1024 * 1024)
+#define MAX_CHUNK_VERTEX_COUNT (CHUNK_WIDTH*CHUNK_WIDTH*(CHUNK_WIDTH+1)*3*6)
 std::atomic_uint meshesBuilt = 0;
 struct Chunk;
 using Neighbors = std::array<Chunk*, 6>;
@@ -354,16 +353,14 @@ struct Chunk {
 	std::mutex deleteMutex;
 	std::mutex bufferMutex;
 	Chunk(V3i position, Renderer& renderer) : position(position), renderer(renderer) {
-		ramUsage += sizeof(Chunk);
 	}
 	~Chunk() {
-		ramUsage -= sizeof(Chunk);
 		assert(userCount == 0);
 	}
 	void allocateBlocks() {
 		if (!blocks) {
-			blocks = new BlockID[CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_WIDTH] {};
 			ramUsage += CHUNK_SIZE;
+			blocks = new BlockID[CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_WIDTH] {};
 		}
 	}
 	void freeBlocks() {
@@ -462,10 +459,10 @@ struct Chunk {
 			auto beginCounter = WH::getPerformanceCounter();
 			for (int x = 0; x < CHUNK_WIDTH; ++x) {
 				for (int z = 0; z < CHUNK_WIDTH; ++z) {
-					V2 globalPos = V2 {(f32)(position.x * CHUNK_WIDTH + x), (f32)(position.z * CHUNK_WIDTH + z)};
+					V2i globalPos = {position.x * CHUNK_WIDTH + x, position.z * CHUNK_WIDTH + z};
 					int h = 0;
 					//h += (int)(128 - perlin(seed + 100000, 8) * 256);
-					h += (int)(textureDetail(8, globalPos / 256.0f / PI, voronoi) * 512) + 2;
+					h += (int)(textureDetail(8, 0.5f, voronoi, globalPos + V2i{1241, 6177}, 512) * 512) + 2;
 					h -= position.y * CHUNK_WIDTH;
 					auto top = h;
 					h = clamp(h, 0, CHUNK_WIDTH);
@@ -473,7 +470,7 @@ struct Chunk {
 						auto b = BLOCK_DIRT;
 						if (y == top - 1) {
 							//b = BLOCK_TALL_GRASS;
-							b = perlin(globalPos / PI, 2) > 0.5f ? BLOCK_TALL_GRASS : BLOCK_AIR;
+							b = perlin((V2)globalPos / PI, 2) > 0.5f ? BLOCK_TALL_GRASS : BLOCK_AIR;
 						}
 						if (y == top - 2) b = BLOCK_GRASS;
 						blocks[BLOCK_INDEX(x, y, z)] = b;
@@ -607,7 +604,7 @@ struct Chunk {
 					visible[5] =               z == 0 ? transparent[5][x][y] : isTransparent(getBlock(x, y, z - 1));
 #endif
 					auto calcVerts = [&](u8 axis) {
-						u32 defData0 = makeVertexData0(x,y,z,0,axis);
+						u32 defData0 = makeVertexData0(x,y,z,0,0,0,axis);
 						ChunkVertex verts[4] {};
 						verts[0].data0 = defData0;
 						verts[1].data0 = defData0;
@@ -716,11 +713,11 @@ struct Chunk {
 						}
 					};
 					auto insertVertices = [&](u32 p, u32 a) {
+						verts[0].data0 = makeVertexData0(x, y, z, 0 + p, 0, 0, AXIS_PY);
+						verts[1].data0 = makeVertexData0(x, y, z, 5 - p, 0, 0, AXIS_PY);
+						verts[2].data0 = makeVertexData0(x, y, z, 2 + p, 0, 0, AXIS_PY);
+						verts[3].data0 = makeVertexData0(x, y, z, 7 - p, 0, 0, AXIS_PY);
 						randomizeUv((p << 1) | a);
-						verts[0].data0 = makeVertexData0(x, y, z, 0 + p, AXIS_PY);
-						verts[1].data0 = makeVertexData0(x, y, z, 5 - p, AXIS_PY);
-						verts[2].data0 = makeVertexData0(x, y, z, 2 + p, AXIS_PY);
-						verts[3].data0 = makeVertexData0(x, y, z, 7 - p, AXIS_PY);
 						pushVertex(verts[0]);
 						pushVertex(verts[a ? 1 : 2]);
 						pushVertex(verts[a ? 2 : 1]);
@@ -851,6 +848,7 @@ struct World {
 	World(Renderer& renderer, const V3i& playerChunk, int loadDistance) : renderer(renderer), playerChunk(playerChunk), loadDistance(loadDistance), hotDistance(min(loadDistance, HOT_DIST)) {
 		int w = loadDistance * 2 + 1;
 		loadedChunks.reserve(w * w * w);
+		ramUsage += MAX_CHUNK_VERTEX_COUNT * sizeof(ChunkVertex) * _countof(vertexPools);
 		for (auto& pool : vertexPools) {
 			pool = (ChunkVertex*)malloc(MAX_CHUNK_VERTEX_COUNT * sizeof(ChunkVertex));
 		}
@@ -911,6 +909,7 @@ struct World {
 			chunk->free();
 			chunk->userCount = 0;
 			delete chunk;
+			ramUsage -= sizeof(Chunk);
 			printf("Saving world... %zu%%\r", progress++ * 100 / loadedChunks.size());
 		}
 		puts("Saving world... 100%");
@@ -973,6 +972,7 @@ struct World {
 				}
 			}
 		});
+		std::this_thread::sleep_for(std::chrono::milliseconds {1});
 		return !stopWork;
 	}
 	void unloadChunks() {
@@ -1000,6 +1000,7 @@ struct World {
 			c->save(saveFile);
 			c->free();
 			delete c;
+			ramUsage -= sizeof(Chunk);
 		}
 	}
 	bool updateChunks() {
@@ -1020,6 +1021,7 @@ struct World {
 			};
 			c->generateMesh(vertexPools[0], neighbors);
 		});
+		std::this_thread::sleep_for(std::chrono::milliseconds {1});
 		return !stopWork;
 	}
 	Chunk* findChunk(V3i pos) {
@@ -1031,6 +1033,7 @@ struct World {
 		Chunk* chunk = findChunk(pos);
 		if (chunk)
 			return chunk;
+		ramUsage += sizeof(Chunk);
 		chunk = new Chunk(pos, renderer);
 		loadedChunks[pos] = chunk;
 		++chunk->userCount;
@@ -1091,6 +1094,7 @@ struct World {
 		return false;
 	}
 };
+#define MAX_CHUNK_POSITION (int(0x80000000 / CHUNK_WIDTH) - 32)
 struct Position {
 	void setWorld(V3 pos) {
 		relPos = pos;
@@ -1106,14 +1110,19 @@ struct Position {
 	}
 	bool normalize() {
 		auto oldChunk = chunkPos;
-		bool chunkChanged = false;
-		if (relPos.x >= CHUNK_WIDTH) { chunkPos.x += int(relPos.x / CHUNK_WIDTH); relPos.x = fmodf(relPos.x, CHUNK_WIDTH); chunkChanged = true; }
-		if (relPos.y >= CHUNK_WIDTH) { chunkPos.y += int(relPos.y / CHUNK_WIDTH); relPos.y = fmodf(relPos.y, CHUNK_WIDTH); chunkChanged = true; }
-		if (relPos.z >= CHUNK_WIDTH) { chunkPos.z += int(relPos.z / CHUNK_WIDTH); relPos.z = fmodf(relPos.z, CHUNK_WIDTH); chunkChanged = true; }
-		if (relPos.x < 0) { relPos.x = fabsf(relPos.x); chunkPos.x -= int(relPos.x / CHUNK_WIDTH) + 1; relPos.x = -fmodf(relPos.x, CHUNK_WIDTH) + CHUNK_WIDTH; chunkChanged = true; }
-		if (relPos.y < 0) { relPos.y = fabsf(relPos.y); chunkPos.y -= int(relPos.y / CHUNK_WIDTH) + 1; relPos.y = -fmodf(relPos.y, CHUNK_WIDTH) + CHUNK_WIDTH; chunkChanged = true; }
-		if (relPos.z < 0) { relPos.z = fabsf(relPos.z); chunkPos.z -= int(relPos.z / CHUNK_WIDTH) + 1; relPos.z = -fmodf(relPos.z, CHUNK_WIDTH) + CHUNK_WIDTH; chunkChanged = true; }
-		return chunkChanged;
+		if (relPos.x >= CHUNK_WIDTH) { chunkPos.x += int(relPos.x / CHUNK_WIDTH); relPos.x = fmodf(relPos.x, CHUNK_WIDTH); }
+		if (relPos.y >= CHUNK_WIDTH) { chunkPos.y += int(relPos.y / CHUNK_WIDTH); relPos.y = fmodf(relPos.y, CHUNK_WIDTH); }
+		if (relPos.z >= CHUNK_WIDTH) { chunkPos.z += int(relPos.z / CHUNK_WIDTH); relPos.z = fmodf(relPos.z, CHUNK_WIDTH); }
+		if (relPos.x < 0) { relPos.x = -relPos.x; chunkPos.x -= int(relPos.x / CHUNK_WIDTH) + 1; relPos.x = -fmodf(relPos.x, CHUNK_WIDTH) + CHUNK_WIDTH; }
+		if (relPos.y < 0) { relPos.y = -relPos.y; chunkPos.y -= int(relPos.y / CHUNK_WIDTH) + 1; relPos.y = -fmodf(relPos.y, CHUNK_WIDTH) + CHUNK_WIDTH; }
+		if (relPos.z < 0) { relPos.z = -relPos.z; chunkPos.z -= int(relPos.z / CHUNK_WIDTH) + 1; relPos.z = -fmodf(relPos.z, CHUNK_WIDTH) + CHUNK_WIDTH; }
+		if (chunkPos.x >  MAX_CHUNK_POSITION) { chunkPos.x =  MAX_CHUNK_POSITION; relPos.x = CHUNK_WIDTH - .001f; }
+		if (chunkPos.y >  MAX_CHUNK_POSITION) { chunkPos.y =  MAX_CHUNK_POSITION; relPos.y = CHUNK_WIDTH - .001f; }
+		if (chunkPos.z >  MAX_CHUNK_POSITION) { chunkPos.z =  MAX_CHUNK_POSITION; relPos.z = CHUNK_WIDTH - .001f; }
+		if (chunkPos.x < -MAX_CHUNK_POSITION) { chunkPos.x = -MAX_CHUNK_POSITION; relPos.x = 0; }
+		if (chunkPos.y < -MAX_CHUNK_POSITION) { chunkPos.y = -MAX_CHUNK_POSITION; relPos.y = 0; }
+		if (chunkPos.z < -MAX_CHUNK_POSITION) { chunkPos.z = -MAX_CHUNK_POSITION; relPos.z = 0; }
+		return chunkPos != oldChunk;
 	}
 	V3 relPos;
 	V3i chunkPos;
@@ -1148,6 +1157,34 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		assert(linearSample(test, 1) == 0);
 	}
 #endif
+	{
+		assert(frac(-6, 5) == 4);
+		assert(frac(-5, 5) == 0);
+		assert(frac(-4, 5) == 1);
+		assert(frac(-3, 5) == 2);
+		assert(frac(-2, 5) == 3);
+		assert(frac(-1, 5) == 4);
+		assert(frac( 0, 5) == 0);
+		assert(frac( 1, 5) == 1);
+		assert(frac( 2, 5) == 2);
+		assert(frac( 3, 5) == 3);
+		assert(frac( 4, 5) == 4);
+		assert(frac( 5, 5) == 0);
+		assert(frac( 6, 5) == 1);
+		assert(floor(-6, 3) == -2);
+		assert(floor(-5, 3) == -2);
+		assert(floor(-4, 3) == -2);
+		assert(floor(-3, 3) == -1);
+		assert(floor(-2, 3) == -1);
+		assert(floor(-1, 3) == -1);
+		assert(floor( 0, 3) == 0);
+		assert(floor( 1, 3) == 0);
+		assert(floor( 2, 3) == 0);
+		assert(floor( 3, 3) == 1);
+		assert(floor( 4, 3) == 1);
+		assert(floor( 5, 3) == 1);
+		assert(floor( 6, 3) == 2);
+	}
 #if 0
 	for (int x = 0; x < CHUNK_WIDTH * 2; ++x) for (int y = 0; y < CHUNK_WIDTH * 2; ++y) for (int z = 0; z < CHUNK_WIDTH * 2; ++z) {
 		auto c = chunkPosFromBlock(V3i{x,y,z});
@@ -1212,9 +1249,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	V3 cameraRot;
 
 #ifdef BUILD_RELEASE
-#define DEFAULT_DRAW_DISTANCE 8
-#else
 #define DEFAULT_DRAW_DISTANCE 4
+#else
+#define DEFAULT_DRAW_DISTANCE 2
 #endif
 
 	int chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
@@ -1227,7 +1264,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	char menuItem;
 	std::cin >> menuItem;
 	if (menuItem == '2') {
-		puts("Дистанция прорисовки (рекомендую от 4 до 16)");
+		puts("Дистанция прорисовки (рекомендую от 2 до 8)");
 		std::cin >> chunkDrawDistance;
 		if (chunkDrawDistance <= 0) {
 			chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
@@ -1808,8 +1845,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		cameraPos.y += camHeight;
 		cameraPos.y -= stepLerp;
 		V3 viewDir = M4::rotationZXY(-cameraRot) * V3 { 0, 0, 1 };
-		auto matrixCamRotProj = projection * M4::rotationYXZ(cameraRot);
-		auto matrixVP = matrixCamRotProj * M4::translation(-cameraPos);
 
 		float dayTime = time / (60 * 1);
 		
@@ -1885,63 +1920,21 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			screenCBuffer.sampleOffset = invScreenSize * ssOff;
 			screenCBuffer.update();
 		}
+		auto matrixCamRotProj = projection * M4::rotationYXZ(cameraRot);
+		auto matrixVP = matrixCamRotProj * M4::translation(-cameraPos);
 
-		struct FrustumPlanes {
-			V4 frustumPlanes[6];
-			FrustumPlanes(const M4& vp) noexcept {
-				frustumPlanes[0].x = vp.i.w + vp.i.x;
-				frustumPlanes[0].y = vp.j.w + vp.j.x;
-				frustumPlanes[0].z = vp.k.w + vp.k.x;
-				frustumPlanes[0].w = vp.l.w + vp.l.x;
-				frustumPlanes[1].x = vp.i.w - vp.i.x;
-				frustumPlanes[1].y = vp.j.w - vp.j.x;
-				frustumPlanes[1].z = vp.k.w - vp.k.x;
-				frustumPlanes[1].w = vp.l.w - vp.l.x;
-				frustumPlanes[2].x = vp.i.w - vp.i.y;
-				frustumPlanes[2].y = vp.j.w - vp.j.y;
-				frustumPlanes[2].z = vp.k.w - vp.k.y;
-				frustumPlanes[2].w = vp.l.w - vp.l.y;
-				frustumPlanes[3].x = vp.i.w + vp.i.y;
-				frustumPlanes[3].y = vp.j.w + vp.j.y;
-				frustumPlanes[3].z = vp.k.w + vp.k.y;
-				frustumPlanes[3].w = vp.l.w + vp.l.y;
-				frustumPlanes[5].x = vp.i.w - vp.i.z;
-				frustumPlanes[5].y = vp.j.w - vp.j.z;
-				frustumPlanes[5].z = vp.k.w - vp.k.z;
-				frustumPlanes[5].w = vp.l.w - vp.l.z;
-				frustumPlanes[4].x = vp.i.z;
-				frustumPlanes[4].y = vp.j.z;
-				frustumPlanes[4].z = vp.k.z;
-				frustumPlanes[4].w = vp.l.z;
-			}
-			/*
-			constexpr void Normalize() & noexcept {
-				for (auto& p : frustumPlanes) {
-					float length = Vec3f(p.x, p.y, p.z).Length();
-					p.x /= length;
-					p.y /= length;
-					p.z /= length;
-					p.w /= length;
-				}
-			}
-			*/
-			constexpr bool containsSphere(V3 position, float radius) const noexcept {
-				for (auto& p : frustumPlanes) {
-					if (V3 {p.x, p.y, p.z}.dot(position) + p.w + radius < 0) {
-						return false;
-					}
-				}
-				return true;
-			}
-		};
 		FrustumPlanes frustumPlanes { matrixVP };
+		frustumPlanes.normalize();
 		static std::vector<Chunk*> chunksToDraw;
 		chunksToDraw.clear();
 		for (auto& [pos,c] : world.loadedChunks) {
-			if (frustumPlanes.containsSphere(V3 {(c->position - playerPos.chunkPos) * CHUNK_WIDTH + CHUNK_WIDTH / 2}, CHUNK_WIDTH * ROOT3)) {
+			if (frustumPlanes.containsSphere(V3 {(c->position - playerPos.chunkPos) * CHUNK_WIDTH + CHUNK_WIDTH / 2}, CHUNK_WIDTH / 2 * ROOT3)) {
 				chunksToDraw.push_back(c);
 			}
 		}
+		std::sort(chunksToDraw.begin(), chunksToDraw.end(), [&](Chunk* a, Chunk* b) {
+			return V3 {a->position - playerPos.chunkPos}.lengthSqr() < V3 {b->position - playerPos.chunkPos}.lengthSqr();
+		});
 
 		renderer.deviceContext->ClearRenderTargetView(backBuffer, V4 {1}.data());
 		renderer.deviceContext->ClearRenderTargetView(renderTargets[0].rt, V4 {1}.data());

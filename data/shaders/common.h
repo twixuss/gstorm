@@ -57,4 +57,8 @@ float3 calcNormal(float3 normal, float3 tangent, float3 tangentSpaceNormal) {
 	return calcNormal(normal, tangent, normalize(cross(normal, tangent)), tangentSpaceNormal);
 }
 
+float sdot(float2 a, float2 b) { return saturate(dot(a, b)); }
+float sdot(float3 a, float3 b) { return saturate(dot(a, b)); }
+float sdot(float4 a, float4 b) { return saturate(dot(a, b)); }
+
 #endif

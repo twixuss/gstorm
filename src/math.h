@@ -17,34 +17,34 @@ struct V4i;
 struct V2 {
 	f32 x = 0;
 	f32 y = 0;
-	constexpr V2() = default;
-	constexpr V2(f32 x, f32 y) : x(x), y(y) {}
-	constexpr V2(f32 v) : V2(v, v) {}
+	ce V2() = default;
+	ce V2(f32 x, f32 y) : x(x), y(y) {}
+	ce V2(f32 v) : V2(v, v) {}
 	template<class T>
-	constexpr explicit V2(T x, T y) : V2((f32)x, (f32)y) {}
-	constexpr explicit V2(V2i b);
-	constexpr V2 operator-() const { return {-x,-y}; }
-	constexpr V2 operator+(V2 b) const { return {x + b.x,y + b.y}; }
-	constexpr V2 operator-(V2 b) const { return {x - b.x,y - b.y}; }
-	constexpr V2 operator*(V2 b) const { return {x * b.x,y * b.y}; }
-	constexpr V2 operator/(V2 b) const { return {x / b.x,y / b.y}; }
-	constexpr V2& operator+=(V2 b) { *this = *this + b; return *this; }
-	constexpr V2& operator-=(V2 b) { *this = *this - b; return *this; }
-	constexpr V2& operator*=(V2 b) { *this = *this * b; return *this; }
-	constexpr V2& operator/=(V2 b) { *this = *this / b; return *this; }
-	constexpr bool operator==(V2 b) const { return x == b.x && y == b.y; }
-	constexpr bool operator!=(V2 b) const { return !(*this == b); }
-	constexpr f32 dot(V2 b) const {
+	ce explicit V2(T x, T y) : V2((f32)x, (f32)y) {}
+	ce explicit V2(V2i b);
+	ce V2 operator-() const { return {-x,-y}; }
+	ce V2 operator+(V2 b) const { return {x + b.x,y + b.y}; }
+	ce V2 operator-(V2 b) const { return {x - b.x,y - b.y}; }
+	ce V2 operator*(V2 b) const { return {x * b.x,y * b.y}; }
+	ce V2 operator/(V2 b) const { return {x / b.x,y / b.y}; }
+	ce V2& operator+=(V2 b) { *this = *this + b; return *this; }
+	ce V2& operator-=(V2 b) { *this = *this - b; return *this; }
+	ce V2& operator*=(V2 b) { *this = *this * b; return *this; }
+	ce V2& operator/=(V2 b) { *this = *this / b; return *this; }
+	ce bool operator==(V2 b) const { return x == b.x && y == b.y; }
+	ce bool operator!=(V2 b) const { return !(*this == b); }
+	ce f32 dot(V2 b) const {
 		return x * b.x + y * b.y;
 	}
-	constexpr f32 lengthSqr() const {
+	ce f32 lengthSqr() const {
 		return dot(*this);
 	}
 	f32 length() const {
 		return sqrtf(lengthSqr());
 	}
-	constexpr f32* data() { return &x; }
-	constexpr const f32* data() const { return &x; }
+	ce f32* data() { return &x; }
+	ce const f32* data() const { return &x; }
 	friend std::ostream& operator<<(std::ostream& os, V2 v) {
 		return os << v.x << ", " << v.y;
 	}
@@ -53,34 +53,34 @@ struct V3 {
 	f32 x = 0;
 	f32 y = 0;
 	f32 z = 0;
-	constexpr V3() = default;
-	constexpr V3(f32 x, f32 y, f32 z) : x(x), y(y), z(z) {}
-	constexpr V3(f32 v) : V3(v, v, v) {}
-	constexpr explicit V3(V3i b);
-	constexpr V3 operator-() const { return {-x,-y,-z}; }
-	constexpr V3 operator+(V3 b) const { return {x + b.x,y + b.y,z + b.z}; }
-	constexpr V3 operator-(V3 b) const { return {x - b.x,y - b.y,z - b.z}; }
-	constexpr V3 operator*(V3 b) const { return {x * b.x,y * b.y,z * b.z}; }
-	constexpr V3 operator/(V3 b) const { return {x / b.x,y / b.y,z / b.z}; }
-	constexpr V3& operator+=(V3 b) { *this = *this + b; return *this; }
-	constexpr V3& operator-=(V3 b) { *this = *this - b; return *this; }
-	constexpr V3& operator*=(V3 b) { *this = *this * b; return *this; }
-	constexpr V3& operator/=(V3 b) { *this = *this / b; return *this; }
-	constexpr bool operator==(V3 b) const { return x == b.x && y == b.y && z == b.z; }
-	constexpr bool operator!=(V3 b) const { return !(*this == b); }
-	constexpr f32 dot(V3 b) const {
+	ce V3() = default;
+	ce V3(f32 x, f32 y, f32 z) : x(x), y(y), z(z) {}
+	ce V3(f32 v) : V3(v, v, v) {}
+	ce explicit V3(V3i b);
+	ce V3 operator-() const { return {-x,-y,-z}; }
+	ce V3 operator+(V3 b) const { return {x + b.x,y + b.y,z + b.z}; }
+	ce V3 operator-(V3 b) const { return {x - b.x,y - b.y,z - b.z}; }
+	ce V3 operator*(V3 b) const { return {x * b.x,y * b.y,z * b.z}; }
+	ce V3 operator/(V3 b) const { return {x / b.x,y / b.y,z / b.z}; }
+	ce V3& operator+=(V3 b) { *this = *this + b; return *this; }
+	ce V3& operator-=(V3 b) { *this = *this - b; return *this; }
+	ce V3& operator*=(V3 b) { *this = *this * b; return *this; }
+	ce V3& operator/=(V3 b) { *this = *this / b; return *this; }
+	ce bool operator==(V3 b) const { return x == b.x && y == b.y && z == b.z; }
+	ce bool operator!=(V3 b) const { return !(*this == b); }
+	ce f32 dot(V3 b) const {
 		return x * b.x + y * b.y + z * b.z;
 	}
-	constexpr f32 lengthSqr() const {
+	ce f32 lengthSqr() const {
 		return dot(*this);
 	}
 	f32 length() const {
 		return sqrtf(lengthSqr());
 	}
-	constexpr V2 xz() const {
+	ce V2 xz() const {
 		return {x, z};
 	}
-	constexpr V3 cross(V3 b) const {
+	ce V3 cross(V3 b) const {
 		return {
 		   y * b.z - z * b.y,
 		   z * b.x - x * b.z,
@@ -91,8 +91,8 @@ struct V3 {
 	V3 normalized() const {
 		return *this * (1.0f / length());
 	}
-	constexpr f32* data() { return &x; }
-	constexpr const f32* data() const { return &x; }
+	ce f32* data() { return &x; }
+	ce const f32* data() const { return &x; }
 	friend std::ostream& operator<<(std::ostream& os, V3 v) {
 		return os << v.x << ", " << v.y << ", " << v.z;
 	}
@@ -119,9 +119,9 @@ struct alignas(16) V4 {
 	V4 operator-() {
 		return {-x,-y,-z,-w};
 	}
-	constexpr f32* data() { return &x; }
-	constexpr const f32* data() const { return &x; }
-	friend std::ostream& operator<<(std::ostream& os, V4 v) {
+	ce f32* data() { return &x; }
+	ce const f32* data() const { return &x; }
+	friend std::ostream& operator<<(std::ostream & os, V4 v) {
 		return os << v.x << ", " << v.y << ", " << v.z << ", " << v.w;
 	}
 	f32 dot(V4 b) const {
@@ -137,20 +137,22 @@ struct alignas(16) V4 {
 struct V2i {
 	i32 x = 0;
 	i32 y = 0;
-	V2i() = default;
-	V2i(i32 x, i32 y) : x(x), y(y) {}
-	V2i(i32 v) : V2i(v, v) {}
-	V2i operator-() const { return {-x,-y}; }
-	V2i operator+(V2i b) const { return {x + b.x,y + b.y}; }
-	V2i operator-(V2i b) const { return {x - b.x,y - b.y}; }
-	V2i operator*(V2i b) const { return {x * b.x,y * b.y}; }
-	V2i operator/(V2i b) const { return {x / b.x,y / b.y}; }
-	V2i& operator+=(V2i b) { *this = *this + b; return *this; }
-	V2i& operator-=(V2i b) { *this = *this - b; return *this; }
-	V2i& operator*=(V2i b) { *this = *this * b; return *this; }
-	V2i& operator/=(V2i b) { *this = *this / b; return *this; }
-	bool operator==(V2i b) const { return x == b.x && y == b.y; }
-	bool operator!=(V2i b) const { return !(*this == b); }
+	ce V2i() = default;
+	ce V2i(i32 x, i32 y) : x(x), y(y) {}
+	ce V2i(i32 v) : V2i(v, v) {}
+	ce V2i operator-() const { return {-x,-y}; }
+	ce V2i operator+(V2i b) const { return {x + b.x,y + b.y}; }
+	ce V2i operator-(V2i b) const { return {x - b.x,y - b.y}; }
+	ce V2i operator*(V2i b) const { return {x * b.x,y * b.y}; }
+	ce V2i operator/(V2i b) const { return {x / b.x,y / b.y}; }
+	ce V2i operator%(V2i b) const { return {x % b.x,y % b.y}; }
+	ce V2i& operator+=(V2i b) { *this = *this + b; return *this; }
+	ce V2i& operator-=(V2i b) { *this = *this - b; return *this; }
+	ce V2i& operator*=(V2i b) { *this = *this * b; return *this; }
+	ce V2i& operator/=(V2i b) { *this = *this / b; return *this; }
+	ce V2i& operator%=(V2i b) { *this = *this % b; return *this; }
+	ce bool operator==(V2i b) const { return x == b.x && y == b.y; }
+	ce bool operator!=(V2i b) const { return !(*this == b); }
 	friend std::ostream& operator<<(std::ostream& os, V2i v) {
 		return os << v.x << ", " << v.y;
 	}
@@ -159,26 +161,28 @@ struct V3i {
 	i32 x = 0;
 	i32 y = 0;
 	i32 z = 0;
-	V3i() = default;
-	V3i(i32 x, i32 y, i32 z) : x(x), y(y), z(z) {}
-	V3i(i32 v) : V3i(v, v, v) {}
-	explicit V3i(V3 b);
-	V3i operator-() const { return {-x,-y,-z}; }
-	V3i operator+(V3i b) const { return {x + b.x,y + b.y,z + b.z}; }
-	V3i operator-(V3i b) const { return {x - b.x,y - b.y,z - b.z}; }
-	V3i operator*(V3i b) const { return {x * b.x,y * b.y,z * b.z}; }
-	V3i operator/(V3i b) const { return {x / b.x,y / b.y,z / b.z}; }
-	V3i& operator+=(V3i b) { *this = *this + b; return *this; }
-	V3i& operator-=(V3i b) { *this = *this - b; return *this; }
-	V3i& operator*=(V3i b) { *this = *this * b; return *this; }
-	V3i& operator/=(V3i b) { *this = *this / b; return *this; }
-	bool operator==(V3i b) const { return x == b.x && y == b.y && z == b.z; }
-	bool operator!=(V3i b) const { return !(*this == b); }
-	V3i absolute() const {
+	ce V3i() = default;
+	ce V3i(i32 x, i32 y, i32 z) : x(x), y(y), z(z) {}
+	ce V3i(i32 v) : V3i(v, v, v) {}
+	ce explicit V3i(V3 b) : V3i((i32)b.x, (i32)b.y, (i32)b.z) {}
+	ce V3i operator-() const { return {-x,-y,-z}; }
+	ce V3i operator+(V3i b) const { return {x + b.x,y + b.y,z + b.z}; }
+	ce V3i operator-(V3i b) const { return {x - b.x,y - b.y,z - b.z}; }
+	ce V3i operator*(V3i b) const { return {x * b.x,y * b.y,z * b.z}; }
+	ce V3i operator/(V3i b) const { return {x / b.x,y / b.y,z / b.z}; }
+	ce V3i operator%(V3i b) const { return {x % b.x,y % b.y,z % b.z}; }
+	ce V3i& operator+=(V3i b) { *this = *this + b; return *this; }
+	ce V3i& operator-=(V3i b) { *this = *this - b; return *this; }
+	ce V3i& operator*=(V3i b) { *this = *this * b; return *this; }
+	ce V3i& operator/=(V3i b) { *this = *this / b; return *this; }
+	ce V3i& operator%=(V3i b) { *this = *this % b; return *this; }
+	ce bool operator==(V3i b) const { return x == b.x && y == b.y && z == b.z; }
+	ce bool operator!=(V3i b) const { return !(*this == b); }
+	ce V3i absolute() const {
 		return {
-			labs(x),
-			labs(y),
-			labs(z)
+			abs(x),
+			abs(y),
+			abs(z)
 		};
 	}
 	friend std::ostream& operator<<(std::ostream& os, V3i v) {
@@ -199,10 +203,12 @@ struct V4i {
 	V4i operator-(V4i b) const { return {x - b.x,y - b.y,z - b.z,w - b.w}; }
 	V4i operator*(V4i b) const { return {x * b.x,y * b.y,z * b.z,w * b.w}; }
 	V4i operator/(V4i b) const { return {x / b.x,y / b.y,z / b.z,w / b.w}; }
+	V4i operator%(V4i b) const { return {x % b.x,y % b.y,z % b.z,w % b.w}; }
 	V4i& operator+=(V4i b) { *this = *this + b; return *this; }
 	V4i& operator-=(V4i b) { *this = *this - b; return *this; }
 	V4i& operator*=(V4i b) { *this = *this * b; return *this; }
 	V4i& operator/=(V4i b) { *this = *this / b; return *this; }
+	V4i& operator%=(V4i b) { *this = *this % b; return *this; }
 	bool operator==(V4i b) const { return x == b.x && y == b.y && z == b.z && w == b.w; }
 	bool operator!=(V4i b) const { return !(*this == b); }
 	V4i absolute() const {
@@ -326,7 +332,7 @@ struct alignas(64) M4 {
 	static M4 rotationYXZ(V3 v) {
 		return (rotationZ(v.z) * rotationX(v.x)) * rotationY(v.y);
 	}
-	friend std::ostream& operator<<(std::ostream& os, M4 m) {
+	friend std::ostream& operator<<(std::ostream & os, M4 m) {
 		return os << m.i << ", " << m.j << ", " << m.k << ", " << m.l;
 	}
 };
@@ -351,6 +357,11 @@ u32 randomU32(u32 r) {
 u32 randomU32(i32 in) {
 	return randomU32((u32)in);
 }
+u32 randomU32(V2i in) {
+	auto x = randomU32(in.x);
+	auto y = randomU32(in.y);
+	return x ^ y;
+}
 u32 randomU32(V3i in) {
 	auto x = randomU32(in.x);
 	auto y = randomU32(in.y);
@@ -361,7 +372,7 @@ u64 randomU64(V3i in) {
 	auto x = randomU32(in.x);
 	auto y = randomU32(in.y);
 	auto z = randomU32(in.z);
-	return 
+	return
 		(u64)x | ((u64)y << 32) +
 		(u64)z | ((u64)x << 32) +
 		(u64)y | ((u64)z << 32);
@@ -420,11 +431,31 @@ V4 frac(V4 v) {
 		frac(v.w),
 	};
 }
-int frac(int v, int s) {
-	v %= s;
+i32 frac(i32 v, i32 s) {
 	if (v < 0)
-		v += s;
-	return v;
+		return (v + 1) % s + s - 1;
+	return v % s;
+}
+V2i frac(V2i v, i32 s) {
+	return {
+		frac(v.x, s),
+		frac(v.y, s),
+	};
+}
+V3i frac(V3i v, i32 s) {
+	return {
+		frac(v.x, s),
+		frac(v.y, s),
+		frac(v.z, s),
+	};
+}
+V4i frac(V4i v, i32 s) {
+	return {
+		frac(v.x, s),
+		frac(v.y, s),
+		frac(v.z, s),
+		frac(v.w, s),
+	};
 }
 V2 floor(V2 v) {
 	return {
@@ -447,52 +478,30 @@ V4 floor(V4 v) {
 		floorf(v.w),
 	};
 }
-int floor(int v, int step) {
-	if (v < 0 && v % step != 0)
-		return v / step * step - step;
-	else 
-		return v / step * step;
+i32 floor(i32 v, i32 s) {
+	if (v < 0)
+		return (v + 1) / s - 1;
+	return v / s;
 }
-V2i floor(V2i v, int step) {
+V2i floor(V2i v, i32 step) {
 	return {
 		floor(v.x, step),
 		floor(v.y, step),
 	};
 }
-V3i floor(V3i v, int step) {
+V3i floor(V3i v, i32 step) {
 	return {
 		floor(v.x, step),
 		floor(v.y, step),
 		floor(v.z, step),
 	};
 }
-V4i floor(V4i v, int step) {
+V4i floor(V4i v, i32 step) {
 	return {
 		floor(v.x, step),
 		floor(v.y, step),
 		floor(v.z, step),
 		floor(v.w, step),
-	};
-}
-V2i frac(V2i v, int s) {
-	return {
-		frac(v.x, s),
-		frac(v.y, s),
-	};
-}
-V3i frac(V3i v, int s) {
-	return {
-		frac(v.x, s),
-		frac(v.y, s),
-		frac(v.z, s),
-	};
-}
-V4i frac(V4i v, int s) {
-	return {
-		frac(v.x, s),
-		frac(v.y, s),
-		frac(v.z, s),
-		frac(v.w, s),
 	};
 }
 f32 dot(V2 a, V2 b) { return a.dot(b); }
@@ -535,16 +544,16 @@ f32 noise(i32 x, i32 y) {
 	return (1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7FFFFFFF) / 2147483648.0f);
 }
 f32 cosNoise(f32 v) {
-	auto fl = (int)floor(v);
+	auto fl = (i32)floor(v);
 	auto l = noise(fl);
 	auto r = noise(fl + 1);
 	return coserp(l, r, frac(v));
 }
 f32 cosNoise(V2 p) {
-	auto x = (int)floor(p.x);
-	auto y = (int)floor(p.y);
-	auto bl = noise(x,     y);
-	auto tl = noise(x,     y + 1);
+	auto x = (i32)floor(p.x);
+	auto y = (i32)floor(p.y);
+	auto bl = noise(x, y);
+	auto tl = noise(x, y + 1);
 	auto br = noise(x + 1, y);
 	auto tr = noise(x + 1, y + 1);
 	auto fr = frac(p.x);
@@ -564,17 +573,22 @@ f32 perlin(V2 v, u32 o) {
 		pmul *= 2.0f;
 	}
 	return result / div;
-};
+}
 V2 random01(V2 p) {
-	V2 a = frac((p + ROOT2) * V2 {PI, PI * 2});
+	V2 a = frac((p + ROOT2) * V2 { PI, PI * 2 });
 	a += dot(a, a + PI * 4);
 	return frac(V2 {a.x * a.y, a.x + a.y});
-};
+}
 V3 random01(V3 p) {
-	V3 a = frac((p + ROOT2) * V3 {PI, PI * 2, PI * 3});
+	V3 a = frac((p + ROOT2) * V3 { PI, PI * 2, PI * 3 });
 	a += dot(a, a + PI * 4);
 	return frac(V3 {a.x * a.y, a.y * a.z, a.x * a.z});
-};
+}
+V2 random01(V2i v) {
+	auto x = randomU32(v);
+	auto y = randomU32(v + 2454940283);
+	return V2 {x / 256, y/256} / 16777215.f;
+}
 f32 voronoi(V2 v) {
 	V2 rel = frac(v) - 0.5f;
 	V2 tile = floor(v);
@@ -602,12 +616,12 @@ f32 voronoi(V2 v) {
 	minDist = min(minDist, distanceSqr(rel, getPos(V2 {-1,-1})));
 	minDist = min(minDist, distanceSqr(rel, getPos(V2 {-1, 0})));
 	minDist = min(minDist, distanceSqr(rel, getPos(V2 {-1, 1})));
-	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 0,-1})));
-	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 0, 0})));
-	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 0, 1})));
-	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 1,-1})));
-	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 1, 0})));
-	minDist = min(minDist, distanceSqr(rel, getPos(V2 { 1, 1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {0,-1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {0, 0})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {0, 1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {1,-1})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {1, 0})));
+	minDist = min(minDist, distanceSqr(rel, getPos(V2 {1, 1})));
 #endif
 	return sqrt(minDist) * (1 / ROOT2);
 }
@@ -625,31 +639,43 @@ f32 voronoi(V3 v) {
 	}
 	return sqrt(minDist) * (1 / ROOT3);
 }
+f32 voronoi(V2i v, i32 cellSize) {
+	V2 rel = (V2 { frac(v, cellSize) } / (f32)cellSize) - 0.5f;
+	V2i tile = floor(v, cellSize);
+	f32 minDist = 1000;
+	auto getPos = [tile](V2i off) { return random01(tile + off) + V2{off} - 0.5f; };
+	for (i32 x = -1; x <= 1; ++x) {
+		minDist = min(minDist, distanceSqr(rel, getPos({x,-1})));
+		minDist = min(minDist, distanceSqr(rel, getPos({x, 0})));
+		minDist = min(minDist, distanceSqr(rel, getPos({x, 1})));
+	}
+	return sqrt(minDist) * (1 / ROOT2);
+}
 f32 voronoiCrackle(V2 v) {
 	V2 rel = frac(v) - 0.5f;
 	V2 tile = floor(v);
-	f32 closestPoints[3] {8,8,8};
+	f32 closestPoi32s[3] {8,8,8};
 	for (i32 x = -2; x <= 2; ++x) {
 		for (i32 y = -2; y <= 2; ++y) {
 			V2 off {(f32)x, (f32)y};
 			auto dist = distanceSqr(rel, off + random01(tile + off) - 0.5f);
 			float maxClosestDist = 0.;
-			int maxClosestDistIdx = 0;
-			for (int i=0; i < _countof(closestPoints); ++i) {
-				if (closestPoints[i] > maxClosestDist) {
-					maxClosestDist = closestPoints[i];
+			i32 maxClosestDistIdx = 0;
+			for (i32 i=0; i < _countof(closestPoi32s); ++i) {
+				if (closestPoi32s[i] > maxClosestDist) {
+					maxClosestDist = closestPoi32s[i];
 					maxClosestDistIdx = i;
 				}
 			}
 			if (dist < maxClosestDist) {
-				closestPoints[maxClosestDistIdx] = dist;
+				closestPoi32s[maxClosestDistIdx] = dist;
 			}
 		}
 	}
-	return sqrt(max(max(closestPoints[0], closestPoints[1]), closestPoints[2])) * (1 / ROOT2);
+	return sqrt(max(max(closestPoi32s[0], closestPoi32s[1]), closestPoi32s[2])) * (1 / ROOT2);
 }
 template<class Seed, class FnRet>
-FnRet textureDetail(u32 octaves, Seed seed, FnRet (&&fn)(Seed), f32 persistence = 0.5f) {
+FnRet textureDetail(u32 octaves, f32 persistence, FnRet (&& fn)(Seed), Seed seed) {
 	FnRet result {};
 	f32 vmul = 1.0f;
 	f32 pmul = 1.0f;
@@ -659,6 +685,20 @@ FnRet textureDetail(u32 octaves, Seed seed, FnRet (&&fn)(Seed), f32 persistence 
 		div += vmul;
 		vmul *= persistence;
 		pmul *= 2.0f;
+	}
+	return result / div;
+}
+template<class Seed, class FnRet>
+FnRet textureDetail(u32 octaves, f32 persistence, FnRet (&& fn)(Seed, i32), Seed seed, i32 extra) {
+	FnRet result {};
+	f32 vmul = 1.0f;
+	i32 pmul = 1;
+	f32 div = 0.0f;
+	for (u32 i = 0; i < octaves; ++i) {
+		result += fn(seed * pmul + i * extra, extra) * vmul;
+		div += vmul;
+		vmul *= persistence;
+		pmul *= 2;
 	}
 	return result / div;
 }
@@ -708,9 +748,9 @@ bool raycastBlock(V3 a, V3 b, V3 blk, Hit& hit, V3 blockDimensions) {
 	results[3] = raycastPlane(a, b, blk + V3 {x,-y, z}, blk + V3 {-x,-y, z}, blk + V3 {x,-y,-z}, hits[3]);//-y
 	results[4] = raycastPlane(a, b, blk + V3 {x, y, z}, blk + V3 {-x, y, z}, blk + V3 {x,-y, z}, hits[4]);//+z
 	results[5] = raycastPlane(a, b, blk + V3 {x, y,-z}, blk + V3 {x,-y,-z}, blk + V3 {-x, y,-z}, hits[5]);//-z
-	int min = -1;
+	i32 min = -1;
 	f32 minDist = FLT_MAX;
-	for (int i = 0; i < 6; ++i) {
+	for (i32 i = 0; i < 6; ++i) {
 		if (results[i]) {
 			auto lenSqr = (a - hits[i].p).lengthSqr();
 			if (lenSqr < minDist) {
@@ -727,9 +767,52 @@ bool raycastBlock(V3 a, V3 b, V3 blk, Hit& hit, V3 blockDimensions) {
 template<class T, size_t size>
 T linearSample(const T (&arr)[size], float t) {
 	f32 f = frac(t) * size;
-	int a = (int)f;
-	int b = a + 1;
-	if (b == size) 
+	i32 a = (i32)f;
+	i32 b = a + 1;
+	if (b == size)
 		b = 0;
 	return lerp(arr[a], arr[b], frac(f));
 }
+struct FrustumPlanes {
+	V4 planes[6];
+	FrustumPlanes(const M4& vp) ne {
+		planes[0].x = vp.i.w + vp.i.x;
+		planes[0].y = vp.j.w + vp.j.x;
+		planes[0].z = vp.k.w + vp.k.x;
+		planes[0].w = vp.l.w + vp.l.x;
+		planes[1].x = vp.i.w - vp.i.x;
+		planes[1].y = vp.j.w - vp.j.x;
+		planes[1].z = vp.k.w - vp.k.x;
+		planes[1].w = vp.l.w - vp.l.x;
+		planes[2].x = vp.i.w - vp.i.y;
+		planes[2].y = vp.j.w - vp.j.y;
+		planes[2].z = vp.k.w - vp.k.y;
+		planes[2].w = vp.l.w - vp.l.y;
+		planes[3].x = vp.i.w + vp.i.y;
+		planes[3].y = vp.j.w + vp.j.y;
+		planes[3].z = vp.k.w + vp.k.y;
+		planes[3].w = vp.l.w + vp.l.y;
+		planes[5].x = vp.i.w - vp.i.z;
+		planes[5].y = vp.j.w - vp.j.z;
+		planes[5].z = vp.k.w - vp.k.z;
+		planes[5].w = vp.l.w - vp.l.z;
+		planes[4].x = vp.i.z;
+		planes[4].y = vp.j.z;
+		planes[4].z = vp.k.z;
+		planes[4].w = vp.l.z;
+	}
+	ce void normalize()& ne {
+		for (auto& p : planes) {
+			auto length = V3 {p.x, p.y, p.z}.length();
+			p /= length;
+		}
+	}
+	nd ce bool containsSphere(V3 position, float radius) const ne {
+		for (auto& p : planes) {
+			if (V3 {p.x, p.y, p.z}.dot(position) + p.w + radius < 0) {
+				return false;
+			}
+		}
+		return true;
+	}
+};

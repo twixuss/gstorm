@@ -1,14 +1,8 @@
 #pragma once
+
 #include <stdint.h>
 #include <utility>
 #include <iostream>
-
-#define assert(x) do{if(!(x)){__debugbreak();exit(-1);}}while(0)
-#ifdef BUILD_RELEASE
-#define assert_dbg(x) 
-#else
-#define assert_dbg(x) assert(x)
-#endif
 
 using i8  = int8_t;
 using i16 = int16_t;
@@ -22,14 +16,23 @@ using f32 = float;
 using f64 = double;
 using wchar = wchar_t;
 
-template<class T>
-void swap(T& a, T& b) {
-	T t = std::move(a);
-	a = std::move(b);
-	b = std::move(t);
-}
+#define ce constexpr
+#define ne noexcept
+#define nd [[nodiscard]]
+#define STRINGIZE_(x) #x
+#define STRINGIZE(x) STRINGIZE_(x)
+#define CONCAT_(x,y) x##y
+#define CONCAT(x,y) CONCAT_(x,y)
+#define DEFER Deferrer CONCAT(_deferrer, __LINE__) = [&]()
 
-char tohex(u8 val) {
+#define assert(x) do{if(!(x)){__debugbreak();exit(-1);}}while(0)
+#ifdef BUILD_RELEASE
+#define assert_dbg(x) 
+#else
+#define assert_dbg(x) assert(x)
+#endif
+
+nd ce char tohex(u8 val) ne {
 	if (val < 10)
 		return '0' + val;
 	return 'A' + (val - 10);
@@ -41,13 +44,7 @@ struct Deferrer {
 	Deferrer(Fn&& fn) : fn(fn) {}
 	~Deferrer() { fn(); }
 };
-#define STRINGIZE_(x) #x
-#define STRINGIZE(x) STRINGIZE_(x)
-#define CONCAT(x,y) x##y
-#define CONCAT2(x,y) CONCAT(x,y)
-#define DEFER Deferrer CONCAT2(_deferrer, __LINE__) = [&]()
-
-FILE* openFileRW(char const* path) {
+nd FILE* openFileRW(char const* path) ne {
 	auto file = fopen(path, "r+b");
 	if (!file)
 		return fopen(path, "w+b");
@@ -55,7 +52,7 @@ FILE* openFileRW(char const* path) {
 }
 
 template<class T>
-void minmax(T a, T b, T& omin, T& omax) {
+ce void minmax(const T& a, const T& b, T& omin, T& omax) ne(ne(a < b)) {
 	if (a < b) {
 		omin = a;
 		omax = b;
@@ -63,6 +60,16 @@ void minmax(T a, T b, T& omin, T& omax) {
 	else {
 		omin = b;
 		omax = a;
+	}
+};
+
+template<class T>
+nd ce std::pair<T, T> minmax(const T& a, const T& b) ne(ne(a < b)) {
+	if (a < b) {
+		return {a, b};
+	}
+	else {
+		return {b, a};
 	}
 };
 

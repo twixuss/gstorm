@@ -60,6 +60,6 @@ void pMain(in V2P i, out float4 oColor : SV_Target, out float oDepth : SV_Depth)
 	float NL = dot(normal, lightDir);
 	float NLlin = 2 / PI * asin(NL);
 	float sun  = getMask( NLlin, 1, 5);
-	float moon = getMask(-NLlin, 1, 2);
+	float moon = getMask(-NLlin, 1, 1);
 	oColor = float4(lerp(0.8, sunColor, saturate(map(NL,-1,1,-2,2))), 1 - sun - moon);
 }

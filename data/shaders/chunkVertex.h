@@ -3,13 +3,14 @@
 #define ATLAS_SIZE 32
 #define ATLAS_ENTRY_SIZE (1.0f/ATLAS_SIZE)
 #ifdef __cplusplus
-u32 makeVertexData0(int px, int py, int pz, int pid, int n) {
-	assert(px < 32);
-	assert(py < 32);
-	assert(pz < 32);
+u32 makeVertexData0(int px, int py, int pz, int pid, int uf, int ur, int n) {
+	assert(px < CHUNK_WIDTH);
+	assert(py < CHUNK_WIDTH);
+	assert(pz < CHUNK_WIDTH);
 	assert(pid < 8);
 	assert(n < 8);
-	return (px << 16) | (py << 11) | (pz << 6) | (pid << 3) | n;
+	static_assert(CHUNK_WIDTH == 64);
+	return (px << 22) | (py << 16) | (pz << 10) | (pid << 7) | (uf << 5) | (ur << 3) | n;
 }
 u32 makeVertexData1(int u, int v) {
 	assert(u <= ATLAS_SIZE);
@@ -22,37 +23,51 @@ u32 makeVertexData1(int u, int v) {
 #define V2 float2
 #define DEFINIT
 #endif
+#define positionXOffset  22
+#define positionYOffset  16
+#define positionZOffset  10
+#define positionIdOffset 7
+#define uvRotationOffset 3
+#define uvFlipOffset     5
+#define normalIdOffset   0
+
+#define positionMask   0x3F
+#define positionIdMask 0x7
+#define uvRotationMask 0x3
+#define uvFlipMask     0x3
+#define normalIdMask   0x3
+
+#define uvXOffset 6
+#define uvYOffset 0
+
+#define uvXMask 0x3F
+#define uvYMask 0x3F
+
 struct ChunkVertex {
-	// free 5 bit
-	// uv flip     - 2 bit 23
-	// uv rotation - 2 bit 21
-	// position X  - 5 bit 16
-	// position Y  - 5 bit 11
-	// position Z  - 5 bit 6
-	// position ID - 3 bit 3
+	// free 4 bit
+	// position X  - 6 bit 22
+	// position Y  - 6 bit 16
+	// position Z  - 6 bit 10
+	// position ID - 3 bit 7
+	// uv flip     - 2 bit 5
+	// uv rotation - 2 bit 3
 	// normal ID   - 3 bit 0
 	u32 data0 DEFINIT;
 	// free 20 bit
-	// uv X - 6 bit
-	// uv Y - 6 bit
+	// uv X - 6 bit 6
+	// uv Y - 6 bit 0
 	u32 data1 DEFINIT;
 
 #ifdef __cplusplus
-	inline static constexpr u32 positionIdOffset = 3;
-	inline static constexpr u32 positionIdMask = 0b111 << positionIdOffset;
-	inline static constexpr u32 uvRotationOffset = 21;
-	inline static constexpr u32 uvRotationMask = 0b11 << uvRotationOffset;
-	inline static constexpr u32 uvFlipOffset = 23;
-	inline static constexpr u32 uvFlipMask = 0b11 << uvFlipOffset;
 	void setBits0(u32 val, u32 mask, u32 offset) {
-		assert(val <= (mask >> offset));
-		data0 = (data0 & ~mask) | (val << offset);
+		assert(val <= (mask));
+		data0 = (data0 & ~(mask << offset)) | (val << offset);
 	}
 	void setPositionID(u32 pid) { setBits0(pid, positionIdMask, positionIdOffset); }
 	void setUvRotation(u32 r) { setBits0(r, uvRotationMask, uvRotationOffset); }
 	void setUvFlip(u32 r) { setBits0(r, uvFlipMask, uvFlipOffset); }
 	auto& setData0(u32 px, u32 py, u32 pz, u32 pid, u32 n) {
-		data0 = makeVertexData0(px, py, pz, pid, n);
+		data0 = makeVertexData0(px, py, pz, pid, 0, 0, n);
 		return *this;
 	}
 	auto& setData1(u32 u, u32 v) {
@@ -97,41 +112,41 @@ static const float3 positions[8] = {
 	float3(-0.5,-0.5, 0.5),
 	float3(-0.5,-0.5,-0.5),
 };
+static const float2x2 uvRots[4] = {
+	float2x2(1,0,
+			 0,1),
+	float2x2(0,1,
+			 -1,0),
+	float2x2(-1,0,
+			 0,-1),
+	float2x2(0,-1,
+			 1,0),
+};
+static const float2 uvFlips[4] = {
+	float2(1,1),
+	float2(1,-1),
+	float2(-1,1),
+	float2(-1,-1),
+};
 float4 getPosition(ChunkVertex v) {
-	float4 position = float4(positions[(v.data0 >> 3) & 0x7], 1);
-	position.x += (v.data0 >> 16) & 0x1F;
-	position.y += (v.data0 >> 11) & 0x1F;
-	position.z += (v.data0 >> 6) & 0x1F;
+	float4 position = float4(positions[(v.data0 >> positionIdOffset) & positionIdMask], 1);
+	position.x += (v.data0 >> positionXOffset) & positionMask;
+	position.y += (v.data0 >> positionYOffset) & positionMask;
+	position.z += (v.data0 >> positionZOffset) & positionMask;
 	return position;
 }
 void getNormal(ChunkVertex v, out float3 normal, out float3 tangent, out float3 bitangent) {
-	uint idx = v.data0 & 0x7;
+	uint idx = (v.data0 >> normalIdOffset) & normalIdMask;
 	tangent= tangents[idx];
 	bitangent = bitangents[idx];
 	normal = normals[idx];
 }
 float2 getUv(ChunkVertex v, out float2x2 rot, out float2 flip) {
 	float2 uv;
-	uv.x = ((v.data1 >> 6) & 0x3F)* ATLAS_ENTRY_SIZE;
-	uv.y = (v.data1 & 0x3F) * ATLAS_ENTRY_SIZE;
-	const float2x2 rots[4] = {
-		float2x2(1,0,
-				 0,1),
-		float2x2(0,1,
-				 -1,0),
-		float2x2(-1,0,
-				 0,-1),
-		float2x2(0,-1,
-				 1,0),
-	};
-	const float2 flips[4] = {
-		float2(1,1),
-		float2(1,-1),
-		float2(-1,1),
-		float2(-1,-1),
-	};
-	rot = rots[(v.data0 >> 21) & 0x3];
-	flip = flips[(v.data0 >> 23) & 0x3];
+	uv.x = ((v.data1 >> uvXOffset) & uvXMask) * ATLAS_ENTRY_SIZE;
+	uv.y = ((v.data1 >> uvYOffset) & uvYMask) * ATLAS_ENTRY_SIZE;
+	rot = uvRots[(v.data0 >> uvRotationOffset) & uvRotationMask];
+	flip = uvFlips[(v.data0 >> uvFlipOffset) & uvFlipMask];
 	return uv;
 }
 #endif
