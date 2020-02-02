@@ -39,9 +39,9 @@ using WndClass = WndClassA;
 using WndClassEx = WndClassExA;
 #endif
 struct Rect : RECT {
-	auto width() const { return right - left; }
-	auto height() const { return bottom - top; }
-	void xywh(LONG x, LONG y, LONG w, LONG h) {
+	auto getWidth() const { return right - left; }
+	auto getHeight() const { return bottom - top; }
+	void setXYWH(LONG x, LONG y, LONG w, LONG h) {
 		left = x;
 		top = y;
 		right = x + w;
@@ -119,3 +119,9 @@ void SetThreadName(DWORD dwThreadID, const char* threadName) {
 	}
 #pragma warning(pop)
 }
+
+#define DHR(call) 	      \
+do {				      \
+	HRESULT hr = call;    \
+	assert(SUCCEEDED(hr));\
+} while (0)

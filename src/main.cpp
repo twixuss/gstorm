@@ -1,39 +1,191 @@
 // TODO: 
 // Free memory of far chunks, but left them visible
 // Make approximate meshes for far chunks
-// BUG: chunk saved twice
 
-#pragma warning(disable:4189)//unused
-#pragma warning(disable:4324)//align padding
-#pragma warning(disable:4359)//align smaller
-#pragma warning(disable:4201)//no name
+//#pragma warning(disable:4189)//unused
+#pragma warning(disable:4324) // align zero padding
+#pragma warning(disable:4359) // align bigger
+#pragma warning(disable:4201) // no struct name
 #include "common.h"
 #include "math.h"
 #include "math.cpp"
 #include "winhelper.h"
 #include "d3d11helper.h"
-#include <time.h>
-#include <stdio.h>
-#include <vector>
+#include "d3d12helper.h"
+
+#include <array>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <mutex>
+#include <optional>
+#include <queue>
+#include <set>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <set>
-#include <queue>
-#include <thread>
-#include <mutex>
-#include <iostream>
-#include <functional>
-#include <optional>
-#include <array>
+#include <vector>
+#include <stack>
+
+#include <direct.h>
+#include <io.h>
+#include <Psapi.h>
+#include <stdio.h>
+#include <stdint.h> 
+#include <time.h>
 #include <timeapi.h>
-#pragma comment(lib, "winmm")
+#include <Windows.h>
+
+#pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "user32.lib")
+
 #define WINDOW_STYLE (WS_OVERLAPPEDWINDOW | WS_VISIBLE)
 #define DATA "../data/"
 #define LDATA L"../data/"
-#define INVALID_BLOCK_POS INT32_MIN
-#define FILEPOS_INVALID ((FilePos)1)
-#define FILEPOS_APPEND ((FilePos)2)
-#include "borismap.h"
+#define FILEPOS_INVALID ((FilePos)-1)
+
+using FilePos = u64;
+
+struct SaveFile {
+	nd FILE* init() ne {
+		const char* path = DATA "save/world";
+		FILE* file = fopen(path, "r+b");
+		if (file) {
+			fread(this, sizeof(*this), 1, file);
+		}
+		else {
+			file = fopen(path, "w+b");
+			assert(file);
+			fwrite(this, sizeof(*this), 1, file);
+		}
+		return file;
+	}
+	nd FilePos add(FILE* file, V3i key) ne {
+		DEFER {write(file); };
+		auto& bucket = buckets[makeHash(key)];
+		FilePos& firstBlockPos = bucket.firstBlockPos;
+		FilePos& lastBlockPos = bucket.lastBlockPos;
+
+		auto duplicate = find(file, key);
+		assert(duplicate == FILEPOS_INVALID);
+		if (firstBlockPos == 0) {
+			firstBlockPos = lastBlockPos = getFileSize(file);
+			Block newBlock = {};
+			auto& entry = newBlock.entries[0];
+			entry.key = key;
+			entry.filePos = firstBlockPos + sizeof(Block);
+			writeBlock(file, newBlock, firstBlockPos);
+			return entry.filePos;
+		}
+		else {
+			Block lastBlock = readBlock(file, lastBlockPos);
+			int targetIdx = 1;
+			for (; targetIdx < entriesPerBlock; targetIdx++) {
+				auto& entry = lastBlock.entries[targetIdx];
+				if (entry.invalid()) {
+					entry.key = key;
+					entry.filePos = getFileSize(file);
+					writeBlock(file, lastBlock, lastBlockPos);
+					return entry.filePos;
+				}
+			}
+			auto prelastBlockPos = lastBlockPos;
+			auto prelastBlock = readBlock(file, prelastBlockPos);
+			prelastBlock.nextBlock = getFileSize(file);
+
+			lastBlockPos = prelastBlock.nextBlock;
+			lastBlock = {};
+			auto& entry = lastBlock.entries[0];
+			entry.key = key;
+			entry.filePos = lastBlockPos + sizeof(Block);
+
+			writeBlock(file, prelastBlock, prelastBlockPos);
+			writeBlock(file, lastBlock, lastBlockPos);
+			return entry.filePos;
+		}
+	}
+	nd FilePos find(FILE* file, V3i key) {
+		FilePos currentBlockPos = buckets[makeHash(key)].firstBlockPos;
+		while (currentBlockPos) {
+			auto currentBlock = readBlock(file, currentBlockPos);
+			for (int i = 0; i < entriesPerBlock; i++) {
+				if (currentBlock.entries[i].invalid())
+					break;
+				if (currentBlock.entries[i].key == key)
+					return currentBlock.entries[i].filePos;
+			}
+			currentBlockPos = currentBlock.nextBlock;
+		}
+		return FILEPOS_INVALID;
+	}
+private:
+	static constexpr u32 bucketCount = 65536;
+	static constexpr u32 entriesPerBlock = 16;
+
+#pragma pack(push, 1)
+	struct Entry {
+		V3i key {0,0,0};
+		FilePos filePos = FILEPOS_INVALID;
+		nd bool invalid() {
+			return filePos == FILEPOS_INVALID;
+		}
+	};
+#pragma pack(pop)
+	struct Block {
+		FilePos nextBlock = 0;
+		Entry entries[entriesPerBlock] {};
+	};
+	struct Bucket {
+		FilePos firstBlockPos = 0, lastBlockPos = 0;
+	};
+
+	Bucket buckets[bucketCount];
+
+	void write(FILE* file) {
+		_fseeki64(file, 0, SEEK_SET);
+		assert(fwrite(this, sizeof(*this), 1, file) != 0);
+	}
+	void debug(FILE* file) {
+		for (u32 i=0; i < bucketCount; ++i) {
+			auto& b = buckets[i];
+			printf("Bucket # %u, firstBlock: %zu, lastBlock: %zu\n", i, b.firstBlockPos, b.lastBlockPos);
+		}
+		for (int j=0; j < bucketCount; ++j) {
+			FilePos currentBlockPos = buckets[j].firstBlockPos;
+			while (currentBlockPos) {
+				auto currentBlock = readBlock(file, currentBlockPos);
+				printf("position in file: %llu\nnextBlock: %llu\n", currentBlockPos, currentBlock.nextBlock);
+				for (int i = 0; i < entriesPerBlock; i++) {
+					auto& e = currentBlock.entries[i];
+					if (e.invalid())
+						break;
+					printf("w: ");
+					std::cout << e.key;
+					printf(", f: %llu\n", e.filePos);
+				}
+				puts("");
+				currentBlockPos = currentBlock.nextBlock;
+			}
+		}
+	}
+	nd u32 makeHash(V3i key) {
+		return std::hash<V3i>{}(key) % bucketCount;
+	}
+	nd Block readBlock(FILE* file, FilePos position) {
+		_fseeki64(file, position, SEEK_SET);
+		Block result;
+		assert(fread(&result, sizeof(Block), 1, file) != 0);
+		return result;
+	}
+	void writeBlock(FILE* file, Block& blk, FilePos position) {
+		_fseeki64(file, position, SEEK_SET);
+		assert(fwrite(&blk, sizeof(Block), 1, file) != 0);
+	}
+	nd FilePos getFileSize(FILE* file) {
+		_fseeki64(file, 0, SEEK_END);
+		return _ftelli64(file);
+	}
+};
 struct InputState {
 	V2i mousePosition;
 	V2i mouseDelta;
@@ -63,9 +215,6 @@ struct Window {
 	bool resize = true;
 	bool killFocus = false;
 };
-// This queue can be used by 2 threads
-// Thread #1 should only push
-// Thread #2 should process and clear current buffer, then swap the pointers
 template<class T>
 struct ConcurrentQueue {
 	void push(T chunk) {
@@ -88,12 +237,10 @@ struct ConcurrentQueue {
 			return;
 		mutex.lock();
 		toProcess.resize(buffer.size());
-		std::copy(buffer.begin(), buffer.end(), toProcess.begin());
+		std::copy(begin(buffer), end(buffer), toProcess.begin());
 		buffer.clear();
 		mutex.unlock();
-		for (auto& c : toProcess) {
-			callback(c);
-		}
+		std::for_each(begin(toProcess), end(toProcess), callback);
 	}
 private:
 	std::vector<T> toProcess;
@@ -155,24 +302,14 @@ struct BlockInfo {
 		default,
 		x,
 		topSideBottom,
+		//water
 	};
-	u8 atlasPos = 0;
+	i16 atlasPos = 0;
+	i16 atlasAxisOffsets[6] {};
 	Type type {};
 	bool randomizeUv[6] {};
-	u8 offsetAtlasPos(u8 axis) {
-		switch (type) {
-			case BlockInfo::Type::x:
-			case BlockInfo::Type::default: 
-				return atlasPos;
-			case BlockInfo::Type::topSideBottom:
-				if (axis == AXIS_PY)
-					return atlasPos;
-				if (axis == AXIS_NY)
-					return atlasPos + 2;
-				return atlasPos + 1;
-			default:
-				assert(0);
-		}
+	i16 offsetAtlasPos(u8 axis) {
+		return atlasPos + atlasAxisOffsets[axis];
 	}
 };
 std::unordered_map<BlockID, BlockInfo> blockInfos;
@@ -181,11 +318,13 @@ std::unordered_map<BlockID, BlockInfo> blockInfos;
 #define BLOCK_DIRT       ((BlockID)1)
 #define BLOCK_GRASS      ((BlockID)2)
 #define BLOCK_TALL_GRASS ((BlockID)3)
+//#define BLOCK_WATER      ((BlockID)4)
 
 bool isTransparent(BlockID id) {
 	switch (id) {
 		case BLOCK_AIR:
 		case BLOCK_TALL_GRASS:
+		//case BLOCK_WATER:
 			return true;
 	}
 	return false;
@@ -194,6 +333,15 @@ bool isPhysical(BlockID id) {
 	switch (id) {
 		case BLOCK_AIR:
 		case BLOCK_TALL_GRASS:
+		//case BLOCK_WATER:
+			return false;
+	}
+	return true;
+}
+bool isBreakable(BlockID id) {
+	switch (id) {
+		case BLOCK_AIR:
+		//case BLOCK_WATER:
 			return false;
 	}
 	return true;
@@ -207,10 +355,16 @@ for (int x=0; x < CHUNK_WIDTH; ++x) \
 for (int y=0; y < CHUNK_WIDTH; ++y) 
 #define BLOCK_INDEX(x,y,z) ((z) * CHUNK_WIDTH * CHUNK_WIDTH + (x) * CHUNK_WIDTH + (y))
 
+#define FOREACH_BLOCK(b, blocks) FOR_BLOCK_IN_CHUNK \
+for (int i=0;i<CHUNK_VOLUME;++i) \
+if (auto& b = blocks[i];false);else
+
 #include "../data/shaders/chunkVertex.h"
 struct alignas(16) DrawCBuffer {
 	M4 mvp;
 	M4 model;
+	M4 modelCamPos;
+	M4 camRotProjection;
 	V4 solidColor;
 };
 struct alignas(16) FrameCBuffer {
@@ -230,48 +384,21 @@ struct alignas(16) SceneCBuffer {
 	f32 fogDistance = 0;
 };
 struct alignas(16) ScreenCBuffer {
+	M4 projection;
 	V2 sampleOffset;
 	V2 invScreenSize;
-};
-template<size_t slot, class Data>
-struct CBuffer : Data {
-	enum class State {
-		invalid, default, dynamic, immutable
-	};
-	static_assert(alignof(Data) % 16 == 0);
-	ID3D11Buffer* buffer = 0;
-	Renderer& renderer;
-	State state = State::invalid;
-	CBuffer(Renderer& renderer) : renderer(renderer) {}
-	void createDynamic() {
-		state = State::dynamic;
-		buffer = renderer.createDynamicBuffer(D3D11_BIND_CONSTANT_BUFFER, sizeof(Data), 0, 0);
-	}
-	void createImmutable() {
-		state = State::immutable;
-		buffer = renderer.createImmutableBuffer(D3D11_BIND_CONSTANT_BUFFER, sizeof(Data), 0, 0, this);
-	}
-	void update() {
-		renderer.updateBuffer(buffer, this, sizeof(Data));
-	}
-	void bindV() {
-		renderer.deviceContext->VSSetConstantBuffers(slot, 1, &buffer);
-	}
-	void bindP() {
-		renderer.deviceContext->PSSetConstantBuffers(slot, 1, &buffer);
-	}
 };
 struct Vertex {
 	V3 position;
 	V2 uv;
 };
+
 struct Mesh {
-	std::vector<Vertex> vertices;
 	ID3D11Buffer* vBuffer = 0;
 	ID3D11ShaderResourceView* vBufferView = 0;
 	u32 vertexCount = 0;
-	void load(Renderer& renderer, char* const path, std::vector<Vertex>&& verticesi) {
-		vertices = std::move(verticesi);
+	template<size_t size>
+	void load(D3D11& renderer, const std::array<Vertex, size>& vertices) {
 		u32 vertexSize = sizeof(Vertex);
 		vertexCount = (u32)vertices.size();
 		assert(vertexCount);
@@ -281,16 +408,16 @@ struct Mesh {
 
 		vBufferView = renderer.createBufferView(vBuffer, vertexCount);
 	}
-	void draw(Renderer& renderer) {
+	void draw(D3D11& renderer) {
 		if (!vertexCount)
 			return;
-		renderer.deviceContext->VSSetShaderResources(0, 1, &vBufferView);
+		renderer.vsSetShaderResource(0, vBufferView);
 		renderer.draw(vertexCount);
 	}
 };
 Mesh blockMesh;
 #define CHUNK_SIZE (sizeof(BlockID) * CHUNK_VOLUME)
-#define SAVE_FILE DATA "save/world"
+#define CHUNK_FILE DATA "save/world"
 void printChunk(BlockID*, V3i);
 V3i chunkPosFromBlock(V3i pos) {
 	return floor(pos, CHUNK_WIDTH);
@@ -298,563 +425,39 @@ V3i chunkPosFromBlock(V3i pos) {
 V3i chunkPosFromBlock(V3 pos) {
 	return chunkPosFromBlock(V3i {pos});
 }
-V3 r2w(V3 rel, V3i chunk) {
-	return rel + (V3)(chunk * CHUNK_WIDTH);
-}
-V3i r2w(V3i rel, V3i chunk) {
-	return rel + chunk * CHUNK_WIDTH;
-}
-V3 w2r(V3 world, V3i chunk) {
-	return world - (V3)(chunk * CHUNK_WIDTH);
-}
-V3i w2r(V3i world, V3i chunk) {
-	return world - chunk * CHUNK_WIDTH;
-}
-std::atomic<size_t> ramUsage, vramUsage;
-i64 generateTime, generateCount;
-i64 buildMeshTime, buildMeshCount;
-std::mutex debugGenerateMutex, debugBuildMeshMutex;
-#define MAX_CHUNK_VERTEX_COUNT (CHUNK_WIDTH*CHUNK_WIDTH*(CHUNK_WIDTH+1)*3*6)
-std::atomic_uint meshesBuilt = 0;
-struct Chunk;
-using Neighbors = std::array<Chunk*, 6>;
-struct Chunk {
-	struct VertexBuffer {
-		ID3D11Buffer* vBuffer = 0;
-		ID3D11ShaderResourceView* vBufferView = 0;
-		u32 vertexCount = 0;
-		void free() {
-			if (vBuffer) { vBuffer->Release();     vBuffer     = 0; }
-			if (vBufferView) { vBufferView->Release(); vBufferView = 0; }
-			vramUsage -= vertexCount * sizeof(ChunkVertex);
-			vertexCount = 0;
-		}
-	};
-	struct MeshBuffer {
-		VertexBuffer buffers[2], * current = buffers, * next = buffers + 1;
-		void swap() {
-			std::swap(current, next);
-		}
-		void free() {
-			for (auto& b : buffers) {
-				b.free();
-			}
-		}
-	} meshBuffer;
-	VertexBuffer approxMesh;
-	BlockID* blocks = 0;
-	Renderer& renderer;
-	V3i position;
-	bool needToSave = false;
-	bool meshGenerated = false;
-	bool generated = false;
-	bool wantedToBeDeleted = false;
-	std::atomic_int userCount = 0;
-	std::mutex deleteMutex;
-	std::mutex bufferMutex;
-	Chunk(V3i position, Renderer& renderer) : position(position), renderer(renderer) {
-	}
-	~Chunk() {
-		assert(userCount == 0);
-	}
-	void allocateBlocks() {
-		if (!blocks) {
-			ramUsage += CHUNK_SIZE;
-			blocks = new BlockID[CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_WIDTH] {};
-		}
-	}
-	void freeBlocks() {
-		if (blocks) {
-			delete blocks;
-			blocks = 0;
-			ramUsage -= CHUNK_SIZE;
-		}
-	}
-	void free() {
-		freeBlocks();
-		meshBuffer.free();
-		//approxMesh.free();
-	}
-	FilePos filePos = FILEPOS_INVALID;
-	bool load(FILE* chunkFile) {
-		//TIMED_FUNCTION_;
-		assert(chunkFile);
-
-		filePos = BorisHash::find(position);
-		if (filePos == FILEPOS_INVALID)
-			return false;
-
-		assert(filePos % CHUNK_SIZE == 0);
-		_fseeki64(chunkFile, filePos, SEEK_SET);
-		allocateBlocks();
-		fread(blocks, CHUNK_SIZE, 1, chunkFile);
-		generated = true;
-		return true;
-	}
-	void save(FILE* chunkFile) {
-		//TIMED_FUNCTION_;
-		assert(chunkFile);
-		if (filePos == FILEPOS_INVALID || !needToSave) {
-			return;
-		}
-		needToSave = false;
-		assert(blocks);
-
-		filePos = BorisHash::find(position);
-		if (filePos == FILEPOS_INVALID)
-			filePos = FILEPOS_APPEND;
-
-		if (filePos == FILEPOS_APPEND) {
-			_fseeki64(chunkFile, 0, SEEK_END);
-			filePos = _ftelli64(chunkFile);
-			assert(filePos % CHUNK_SIZE == 0);
-
-			fwrite(blocks, CHUNK_SIZE, 1, chunkFile);
-
-			BorisHash::add({position, filePos});
-		}
-		else {
-			assert(filePos % CHUNK_SIZE == 0);
-			_fseeki64(chunkFile, filePos, SEEK_SET);
-			fwrite(blocks, CHUNK_SIZE, 1, chunkFile);
-		}
-	}
-	// returns true if block changed
-	bool setBlock(int x, int y, int z, BlockID blk) {
-		assert(x >= 0 && x < CHUNK_WIDTH);
-		assert(y >= 0 && y < CHUNK_WIDTH);
-		assert(z >= 0 && z < CHUNK_WIDTH);
-		auto& b = blocks[BLOCK_INDEX(x,y,z)];
-		auto result = b != blk;
-		b = blk;
-		needToSave = true;
-		meshGenerated = false;
-		return result;
-	}
-	bool setBlock(V3i p, BlockID blk) {
-		return setBlock(p.x, p.y, p.z, blk);
-	}
-	BlockID& getBlock(int x, int y, int z) {
-		assert(x >= 0 && x < CHUNK_WIDTH);
-		assert(y >= 0 && y < CHUNK_WIDTH);
-		assert(z >= 0 && z < CHUNK_WIDTH);
-		assert(blocks);
-		return blocks[BLOCK_INDEX(x, y, z)];
-	}
-	BlockID& getBlock(V3i p) {
-		return getBlock(p.x, p.y, p.z);
-	}
-	void generate() {
-		//TIMED_FUNCTION_;
-		filePos = FILEPOS_APPEND;
-		allocateBlocks();
-		if (generated)
-			return;
-		//printf("Generated ");
-		//printChunk(blocks, position);
-		if (position.y < 0) {
-			memset(blocks, 0x01010101, CHUNK_SIZE);
-		}
-		else {
-			auto beginCounter = WH::getPerformanceCounter();
-			for (int x = 0; x < CHUNK_WIDTH; ++x) {
-				for (int z = 0; z < CHUNK_WIDTH; ++z) {
-					V2i globalPos = {position.x * CHUNK_WIDTH + x, position.z * CHUNK_WIDTH + z};
-					int h = 0;
-					//h += (int)(128 - perlin(seed + 100000, 8) * 256);
-					h += (int)(textureDetail(8, 0.5f, voronoi, globalPos + V2i{1241, 6177}, 512) * 512) + 2;
-					h -= position.y * CHUNK_WIDTH;
-					auto top = h;
-					h = clamp(h, 0, CHUNK_WIDTH);
-					for (int y = 0; y < h; ++y) {
-						auto b = BLOCK_DIRT;
-						if (y == top - 1) {
-							//b = BLOCK_TALL_GRASS;
-							b = perlin((V2)globalPos / PI, 2) > 0.5f ? BLOCK_TALL_GRASS : BLOCK_AIR;
-						}
-						if (y == top - 2) b = BLOCK_GRASS;
-						blocks[BLOCK_INDEX(x, y, z)] = b;
-					}
-				}
-			}
-			auto endCounter = WH::getPerformanceCounter();
-			debugGenerateMutex.lock();
-			generateTime += endCounter - beginCounter;
-			++generateCount;
-			debugGenerateMutex.unlock();
-		}
-		generated = true;
-		
-		if(0) //if (!saveSpaceOnDisk)
-			needToSave = true; // TODO: make option for saving space on disk
-	}
-	/*
-	void buildApproxMesh() {
-		u32 heights[4] {};
-		for (int y=0; y < CHUNK_WIDTH; ++y) { if()heights[0] = max(); }
-		struct Vertex {
-			V3 pos, nrm;
-			V2 uv;
-		};
-		int pos = blockInfos.at(BLOCK_GRASS).offsetAtlasPos(AXIS_PY);
-		V2i atlasPos {
-			pos % ATLAS_SIZE,
-			pos / ATLAS_SIZE,
-		};
-		V2 uvs[4] {
-			V2{atlasPos.x,  atlasPos.y} * ATLAS_ENTRY_SIZE,
-			V2{atlasPos.x + 1,atlasPos.y} * ATLAS_ENTRY_SIZE,
-			V2{atlasPos.x + 1,atlasPos.y + 1} * ATLAS_ENTRY_SIZE,
-			V2{atlasPos.x,  atlasPos.y + 1} * ATLAS_ENTRY_SIZE,
-		};
-		auto uvIdx = randomU32(position) % 4;
-		Vertex verts[4] {
-			{{0, (f32)heights[0], CHUNK_WIDTH}		    ,{0,1,0}, uvs[(uvIdx + 0) % 4]},
-			{{CHUNK_WIDTH, (f32)heights[1], CHUNK_WIDTH},{0,1,0}, uvs[(uvIdx + 1) % 4]},
-			{{0, (f32)heights[2], 0}					,{0,1,0}, uvs[(uvIdx + 3) % 4]},
-			{{CHUNK_WIDTH, (f32)heights[3], 0}		    ,{0,1,0}, uvs[(uvIdx + 2) % 4]},
-		};
-
-		Vertex vertices[6] {
-			verts[0],
-			verts[1],
-			verts[2],
-			verts[1],
-			verts[3],
-			verts[2],
-		}
-		approxMesh.free();
-		approxMesh.vertexCount = 6;
-
-		if (approxMesh.vertexCount) {
-			u32 vertexBufferSize = approxMesh.vertexCount * sizeof(vertices[0]);
-			approxMesh.vBuffer = renderer.createImmutableStructuredBuffer(vertexBufferSize, sizeof(vertices[0]), vertices);
-			vramUsage += vertexBufferSize;
-
-			D3D11_SHADER_RESOURCE_VIEW_DESC desc {};
-			desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-			desc.Buffer.NumElements = approxMesh.vertexCount;
-			DHR(renderer.device->CreateShaderResourceView(approxMesh.vBuffer, &desc, &approxMesh.vBufferView));
-		}
-	}
-	void drawApprox(ID3D11Buffer* drawCBuffer) {
-		renderer.deviceContext->VSSetShaderResources(0, 1, &approxMesh.vBufferView);
-		renderer.updateBuffer(drawCBuffer, drawData);
-		renderer.draw(approxMesh.vertexCount);
-	}
-	*/
-	void generateMesh(ChunkVertex* vertexPool, const Neighbors& neighbors) {
-		deleteMutex.lock();
-		if (wantedToBeDeleted) {
-			deleteMutex.unlock();
-			return;
-		}
-		deleteMutex.unlock();
-		//TIMED_FUNCTION;
-		assert(blocks);
-		ChunkVertex* verticesBegin = vertexPool;
-		auto pushVertex = [&vertexPool, verticesBegin](ChunkVertex vert) {
-			assert(vertexPool - verticesBegin < MAX_CHUNK_VERTEX_COUNT && "small pool");
-			*vertexPool++ = vert;
-		};
-		auto beginCounter = WH::getPerformanceCounter();
-//#define FIRST
-#ifndef FIRST
-		u8 transparent[6][CHUNK_WIDTH][CHUNK_WIDTH];
-#define FILL_NEIGHBOR_BLOCKS(axis, iterA, iterB, x, y, z)														\
-		if (neighbors[axis])																					\
-			for (u32 iterA = 0; iterA < CHUNK_WIDTH; ++iterA) for (u32 iterB = 0; iterB < CHUNK_WIDTH; ++iterB)	\
-				transparent[axis][iterA][iterB] = isTransparent(neighbors[axis]->getBlock(x, y, z));			\
-		else																									\
-			memset(transparent[axis], 1, sizeof(transparent[axis]));
-		
-		FILL_NEIGHBOR_BLOCKS(0, y, z,               0, y, z);
-		FILL_NEIGHBOR_BLOCKS(1, y, z, CHUNK_WIDTH - 1, y, z);
-		FILL_NEIGHBOR_BLOCKS(2, x, z, x,               0, z);
-		FILL_NEIGHBOR_BLOCKS(3, x, z, x, CHUNK_WIDTH - 1, z);
-		FILL_NEIGHBOR_BLOCKS(4, x, y, x, y,               0);
-		FILL_NEIGHBOR_BLOCKS(5, x, y, x, y, CHUNK_WIDTH - 1);
-#endif
-		//u32 idxOff = 0;
-		FOR_BLOCK_IN_CHUNK {
-			auto & b = getBlock(x,y,z);
-			switch (b) {
-				case 0:
-					continue;
-			}
-			auto& blockInfo = blockInfos.at(b);
-
-			switch (blockInfo.type) {
-				case BlockInfo::Type::default:
-				case BlockInfo::Type::topSideBottom: {
-					bool visible[6];
-#ifdef FIRST
-					visible[0] = x == CHUNK_WIDTH - 1 ? (neighbors[0] ? isTransparent(neighbors[0]->getBlock(              0, y, z)) : true) : isTransparent(getBlock(x + 1, y, z));
-					visible[1] =               x == 0 ? (neighbors[1] ? isTransparent(neighbors[1]->getBlock(CHUNK_WIDTH - 1, y, z)) : true) : isTransparent(getBlock(x - 1, y, z));
-					visible[2] = y == CHUNK_WIDTH - 1 ? (neighbors[2] ? isTransparent(neighbors[2]->getBlock(x,               0, z)) : true) : isTransparent(getBlock(x, y + 1, z));
-					visible[3] =               y == 0 ? (neighbors[3] ? isTransparent(neighbors[3]->getBlock(x, CHUNK_WIDTH - 1, z)) : true) : isTransparent(getBlock(x, y - 1, z));
-					visible[4] = z == CHUNK_WIDTH - 1 ? (neighbors[4] ? isTransparent(neighbors[4]->getBlock(x, y,               0)) : true) : isTransparent(getBlock(x, y, z + 1));
-					visible[5] =               z == 0 ? (neighbors[5] ? isTransparent(neighbors[5]->getBlock(x, y, CHUNK_WIDTH - 1)) : true) : isTransparent(getBlock(x, y, z - 1));
-#else
-					visible[0] = x == CHUNK_WIDTH - 1 ? transparent[0][y][z] : isTransparent(getBlock(x + 1, y, z));
-					visible[1] =               x == 0 ? transparent[1][y][z] : isTransparent(getBlock(x - 1, y, z));
-					visible[2] = y == CHUNK_WIDTH - 1 ? transparent[2][x][z] : isTransparent(getBlock(x, y + 1, z));
-					visible[3] =               y == 0 ? transparent[3][x][z] : isTransparent(getBlock(x, y - 1, z));
-					visible[4] = z == CHUNK_WIDTH - 1 ? transparent[4][x][y] : isTransparent(getBlock(x, y, z + 1));
-					visible[5] =               z == 0 ? transparent[5][x][y] : isTransparent(getBlock(x, y, z - 1));
-#endif
-					auto calcVerts = [&](u8 axis) {
-						u32 defData0 = makeVertexData0(x,y,z,0,0,0,axis);
-						ChunkVertex verts[4] {};
-						verts[0].data0 = defData0;
-						verts[1].data0 = defData0;
-						verts[2].data0 = defData0;
-						verts[3].data0 = defData0;
-						switch (axis) {
-							case AXIS_PX:
-								verts[0].setPositionID(1);
-								verts[1].setPositionID(0);
-								verts[2].setPositionID(3);
-								verts[3].setPositionID(2);
-								break;
-							case AXIS_NX:
-								verts[0].setPositionID(4);
-								verts[1].setPositionID(5);
-								verts[2].setPositionID(6);
-								verts[3].setPositionID(7);
-								break;
-							case AXIS_PY:
-								verts[0].setPositionID(4);
-								verts[1].setPositionID(0);
-								verts[2].setPositionID(5);
-								verts[3].setPositionID(1);
-								break;
-							case AXIS_NY:
-								verts[0].setPositionID(7);
-								verts[1].setPositionID(3);
-								verts[2].setPositionID(6);
-								verts[3].setPositionID(2);
-								break;
-							case AXIS_PZ:
-								verts[0].setPositionID(0);
-								verts[1].setPositionID(4);
-								verts[2].setPositionID(2);
-								verts[3].setPositionID(6);
-								break;
-							case AXIS_NZ:
-								verts[0].setPositionID(5);
-								verts[1].setPositionID(1);
-								verts[2].setPositionID(7);
-								verts[3].setPositionID(3);
-								break;
-							default:
-								assert(0);
-						}
-						int pos = blockInfo.offsetAtlasPos(axis);
-						V2i atlasPos {
-							pos % ATLAS_SIZE,
-							pos / ATLAS_SIZE,
-						};
-						u32 uvIdx = 0;
-						if (blockInfo.randomizeUv[axis]) {
-							uvIdx = randomU32(r2w(V3i {x,y,z}, position)) % 4;
-						}
-						verts[0].setUvRotation(uvIdx);
-						verts[1].setUvRotation(uvIdx);
-						verts[2].setUvRotation(uvIdx);
-						verts[3].setUvRotation(uvIdx);
-						V2i uvs[4];
-						uvs[0] = {atlasPos.x,  atlasPos.y};
-						uvs[1] = {atlasPos.x + 1,atlasPos.y};
-						uvs[2] = {atlasPos.x + 1,atlasPos.y + 1};
-						uvs[3] = {atlasPos.x,  atlasPos.y + 1};
-						verts[0].setData1(uvs[(uvIdx + 0) % 4]);
-						verts[1].setData1(uvs[(uvIdx + 1) % 4]);
-						verts[2].setData1(uvs[(uvIdx + 3) % 4]);
-						verts[3].setData1(uvs[(uvIdx + 2) % 4]);
-						pushVertex(verts[0]);
-						pushVertex(verts[1]);
-						pushVertex(verts[2]);
-						pushVertex(verts[1]);
-						pushVertex(verts[3]);
-						pushVertex(verts[2]);
-					};
-					if (visible[0]) calcVerts(AXIS_PX);
-					if (visible[1]) calcVerts(AXIS_NX);
-					if (visible[2]) calcVerts(AXIS_PY);
-					if (visible[3]) calcVerts(AXIS_NY);
-					if (visible[4]) calcVerts(AXIS_PZ);
-					if (visible[5]) calcVerts(AXIS_NZ);
-					break;
-				}
-				case BlockInfo::Type::x: {
-					ChunkVertex verts[4] {};
-					V2i atlasPos {
-						 blockInfo.atlasPos % ATLAS_SIZE,
-						 blockInfo.atlasPos / ATLAS_SIZE,
-					};
-					V2i uvs[4];
-					uvs[0] = {atlasPos.x,  atlasPos.y};
-					uvs[1] = {atlasPos.x + 1,atlasPos.y};
-					uvs[2] = {atlasPos.x + 1,atlasPos.y + 1};
-					uvs[3] = {atlasPos.x,  atlasPos.y + 1};
-					auto randomizeUv = [&](u32 o) {
-						if (randomU32(r2w(V3i {x,y,z} + o, position)) & 1) {
-							verts[0].setData1(uvs[0]).setUvFlip(0b00);
-							verts[1].setData1(uvs[1]).setUvFlip(0b00);
-							verts[2].setData1(uvs[3]).setUvFlip(0b00);
-							verts[3].setData1(uvs[2]).setUvFlip(0b00);
-						}
-						else {
-							verts[0].setData1(uvs[1]).setUvFlip(0b10);
-							verts[1].setData1(uvs[0]).setUvFlip(0b10);
-							verts[2].setData1(uvs[2]).setUvFlip(0b10);
-							verts[3].setData1(uvs[3]).setUvFlip(0b10);
-						}
-					};
-					auto insertVertices = [&](u32 p, u32 a) {
-						verts[0].data0 = makeVertexData0(x, y, z, 0 + p, 0, 0, AXIS_PY);
-						verts[1].data0 = makeVertexData0(x, y, z, 5 - p, 0, 0, AXIS_PY);
-						verts[2].data0 = makeVertexData0(x, y, z, 2 + p, 0, 0, AXIS_PY);
-						verts[3].data0 = makeVertexData0(x, y, z, 7 - p, 0, 0, AXIS_PY);
-						randomizeUv((p << 1) | a);
-						pushVertex(verts[0]);
-						pushVertex(verts[a ? 1 : 2]);
-						pushVertex(verts[a ? 2 : 1]);
-						pushVertex(verts[1]);
-						pushVertex(verts[a ? 3 : 2]);
-						pushVertex(verts[a ? 2 : 3]);
-					};
-					insertVertices(0, 0);
-					insertVertices(0, 1);
-					insertVertices(1, 0);
-					insertVertices(1, 1);
-					break;
-				}
-				default:
-					assert(0);
-			}
-		}
-		auto endCounter = WH::getPerformanceCounter();
-		debugBuildMeshMutex.lock();
-		buildMeshTime += endCounter - beginCounter;
-		++buildMeshCount;
-		debugBuildMeshMutex.unlock();
-
-		std::unique_lock l(bufferMutex);
-		auto& buffer = *meshBuffer.next;
-
-		buffer.free();
-
-		buffer.vertexCount = (u32)(vertexPool - verticesBegin);
-
-		if (!buffer.vertexCount)
-			return;
-
-		u32 vertexBufferSize = buffer.vertexCount * sizeof(verticesBegin[0]);
-		buffer.vBuffer = renderer.createImmutableStructuredBuffer(vertexBufferSize, sizeof(verticesBegin[0]), verticesBegin);
-		vramUsage += vertexBufferSize;
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC desc {};
-		desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-		desc.Buffer.NumElements = buffer.vertexCount;
-		DHR(renderer.device->CreateShaderResourceView(buffer.vBuffer, &desc, &buffer.vBufferView));
-		meshGenerated = true;
-		++meshesBuilt;
-	}
-	template<size_t slot>
-	void draw(CBuffer<slot, DrawCBuffer>& drawCBuffer, V3i playerChunk, const M4& matrixVP) {
-		auto buffer = meshBuffer.current;
-		{
-			std::unique_lock lk(bufferMutex);
-			if (meshBuffer.next->vBuffer) {
-				meshBuffer.current->free();
-				meshBuffer.swap();
-				buffer = meshBuffer.current;
-			}
-			if (!buffer->vertexCount || !buffer->vBufferView)
-				return;
-			renderer.deviceContext->VSSetShaderResources(0, 1, &buffer->vBufferView);
-		}
-		drawCBuffer.model = M4::translation((V3)((position - playerChunk) * CHUNK_WIDTH));
-		drawCBuffer.mvp = matrixVP * drawCBuffer.model;
-		drawCBuffer.update();
-		renderer.draw(buffer->vertexCount);
-	}
-};
-/*
-void printChunk(Block* blocks, V3i pos) {
-	auto usedBlocks = 0;
-	for (int j = 0; j < TOTAL_CHUNK_SIZE; ++j) {
-		if (blocks[j] == BlockID::cube) ++usedBlocks;
-	}
-	printf("chunk %i %i %i, used blocks: %u\n", pos.x, pos.y, pos.z, usedBlocks);
-}
-*/
-#if 0
-#define ARENA_CAPACITY 0x10000
-struct ChunkArena {
-	struct alignas(64) _Entry { Chunk c; bool b; };
-	struct Block {
-		bool used[ARENA_CAPACITY] {};
-		Chunk memory[ARENA_CAPACITY];
-		Block* next = 0;
-	};
-	Block* start = 0;
-	Block* current = 0;
-	ChunkArena() {
-		start = new Block;
-		current = start;
-	}
-	Chunk* allocate() {
-		for (u32 i = 0; i < capacity; ++i) {
-			if (!used[i]) {
-				used[i] = true;
-				return new(memory + i) Chunk;
-			}
-		}
-		assert(!"Not enough memory");
-	}
-	void free(Chunk* ptr) {
-		u32 i = ptr - memory;
-		assert(used[i]);
-		used[i] = false;
-		ptr->~Chunk();
-	}
-};
-#endif
-int maxDistance(V3i a, V3i b) {
-	a = (a-b).absolute();
-	return max(max(a.x, a.y), a.z);
-}
+#include "chunk.h"
+using ChunkArena = Arena<Chunk, 0x10000>;
 #ifdef BUILD_RELEASE
 #define HOT_DIST 4
 #else
 #define HOT_DIST 1
 #endif
 struct World {
+	ChunkArena chunkArena;
+	BlockArena blockArena;
 	std::unordered_map<V3i, Chunk*> loadedChunks;
 	ConcurrentQueue<Chunk*> loadQueue, unloadQueue;
 	ConcurrentQueue<std::pair<Chunk*, Neighbors>> meshQueue;
 	ChunkVertex* vertexPools[2]; // extra one for immediate mesh build
+	u32* indexPools[2]; // extra one for immediate mesh build
 	std::atomic_bool stopWork = false;
 	std::vector<Chunk*> chunksWantedToDelete;
-	Renderer& renderer;
+	D3D11& renderer;
 	const V3i& playerChunk;
 	const int loadDistance;
-	const int hotDistance;
 	std::thread chunkLoader, meshBuilder;
-	FILE* saveFile;
-	World(Renderer& renderer, const V3i& playerChunk, int loadDistance) : renderer(renderer), playerChunk(playerChunk), loadDistance(loadDistance), hotDistance(min(loadDistance, HOT_DIST)) {
+	SaveFile& saveFile;
+	FILE* saveFileHandle;
+	World(D3D11& renderer, const V3i& playerChunk, int loadDistance) : saveFile(*new SaveFile), renderer(renderer), playerChunk(playerChunk), loadDistance(loadDistance) {
 		int w = loadDistance * 2 + 1;
 		loadedChunks.reserve(w * w * w);
-		ramUsage += MAX_CHUNK_VERTEX_COUNT * sizeof(ChunkVertex) * _countof(vertexPools);
 		for (auto& pool : vertexPools) {
-			pool = (ChunkVertex*)malloc(MAX_CHUNK_VERTEX_COUNT * sizeof(ChunkVertex));
+			pool = (ChunkVertex*)malloc(maxChunkVertexCount * sizeof(ChunkVertex));
 		}
-		BorisHash::init();
-		saveFile = openFileRW(SAVE_FILE);
-		//BorisHash::debug();
+		for (auto& pool : indexPools) {
+			pool = (u32*)malloc(maxChunkIndexCount * sizeof(u32));
+		}
+		saveFileHandle = saveFile.init();
 		chunkLoader = std::thread {[this]() {
 			SetThreadName((DWORD)-1, "Chunk loader");
 			while (updateChunks());
@@ -863,8 +466,6 @@ struct World {
 			SetThreadName((DWORD)-1, "Mesh builder");
 			while (buildMeshes());
 		}};
-
-
 	}
 	void seeChunk(V3i pos) {
 		getChunkUnchecked(pos);
@@ -884,37 +485,47 @@ struct World {
 
 		static std::vector<Chunk*> chunksToUnload;
 		chunksToUnload.clear();
-		//chunksToUnload.reserve(loadDistance * 2 + 1);
-		for (auto& [pos, c] : loadedChunks) {
+		//for (auto& [pos, c] : loadedChunks) {
+		chunkArena.for_each([&] (Chunk* c) {
 			auto dist = maxDistance(playerChunk, c->position);
 			if (dist > loadDistance) {
 				unloadQueue.push(c);
 				chunksToUnload.push_back(c);
 			}
-		}
+		});
+		//}
 		for (auto& c : chunksToUnload) {
 			loadedChunks.erase(c->position);
 		}
 	}
+	void saveAndDelete(Chunk* c) {
+		if (c->needToSave()) {
+			auto& filePos = c->filePos;
+			if (filePos == FILEPOS_INVALID)
+				filePos = saveFile.add(saveFileHandle, c->position);
+			c->save(saveFileHandle, filePos);
+		}
+		c->free(blockArena);
+		chunkArena.free(c);
+	}
 	// main thread
 	void save() {
+		stopWork = true;
 		puts("Waiting for chunk loader thread...");
 		chunkLoader.join();
 		puts("Waiting for mesh builder thread...");
 		meshBuilder.join();
 
 		size_t progress = 0;
-		for (auto& [position, chunk] : loadedChunks) {
-			chunk->save(saveFile);
-			chunk->free();
-			chunk->userCount = 0;
-			delete chunk;
-			ramUsage -= sizeof(Chunk);
+		//for (auto& [position, c] : loadedChunks) {
+		chunkArena.for_each([&] (Chunk* c) {
+			c->userCount = 0;
+			saveAndDelete(c);
 			printf("Saving world... %zu%%\r", progress++ * 100 / loadedChunks.size());
-		}
+		});
+		//}
 		puts("Saving world... 100%");
-		fclose(saveFile);
-		BorisHash::shutdown();
+		fclose(saveFileHandle);
 	}
 	Neighbors getNeighbors(Chunk* c) {
 		Neighbors neighbors;
@@ -934,7 +545,7 @@ struct World {
 	void wantToDelete(Chunk* c) {
 		if (!c->wantedToBeDeleted) {
 			c->wantedToBeDeleted = true;
-			assert_dbg(!contains(chunksWantedToDelete, c));
+			assert_dbg(!contains(chunksWantedToDelete, c)); // BUG
 			chunksWantedToDelete.push_back(c);
 		}
 	}
@@ -962,8 +573,17 @@ struct World {
 			}
 			if (stopWork)
 				return;
-			if (!saveFile || !c->load(saveFile)) {
-				c->generate();
+
+			auto tryLoad = [&]() {
+				auto filePos = saveFile.find(saveFileHandle, c->position);
+				if (filePos == FILEPOS_INVALID)
+					return false;
+				c->load(saveFileHandle, filePos, blockArena);
+				return true;
+			};
+
+			if (!saveFileHandle || !tryLoad()) {
+				c->generate(blockArena);
 			}
 			buildMesh(c);
 			for (auto& n : getNeighbors(c)) {
@@ -997,10 +617,7 @@ struct World {
 		}
 		chunksWantedToDelete = std::move(chunksNotToDelete);
 		for (auto& c : chunksToDelete) {
-			c->save(saveFile);
-			c->free();
-			delete c;
-			ramUsage -= sizeof(Chunk);
+			saveAndDelete(c);
 		}
 	}
 	bool updateChunks() {
@@ -1019,7 +636,7 @@ struct World {
 					--n->userCount;
 				}
 			};
-			c->generateMesh(vertexPools[0], neighbors);
+			c->generateMesh(vertexPools[0], indexPools[0], neighbors);
 		});
 		std::this_thread::sleep_for(std::chrono::milliseconds {1});
 		return !stopWork;
@@ -1033,8 +650,7 @@ struct World {
 		Chunk* chunk = findChunk(pos);
 		if (chunk)
 			return chunk;
-		ramUsage += sizeof(Chunk);
-		chunk = new Chunk(pos, renderer);
+		chunk = chunkArena.allocate(pos, renderer).data;
 		loadedChunks[pos] = chunk;
 		++chunk->userCount;
 		loadQueue.push(chunk);
@@ -1058,7 +674,7 @@ struct World {
 		if (c->setBlock(relPos, blk)) {
 			auto updateMesh = [this, immediate](Chunk* chunk) {
 				if (immediate) {
-					chunk->generateMesh(vertexPools[1], getNeighbors(chunk));
+					chunk->generateMesh(vertexPools[1], indexPools[1], getNeighbors(chunk));
 				}
 				else
 					buildMesh(chunk);
@@ -1128,63 +744,11 @@ struct Position {
 	V3i chunkPos;
 };
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
-	_set_invalid_parameter_handler([](const wchar_t* expression, const wchar_t* function, const wchar_t* file, unsigned line, uintptr_t) {
-		wprintf(L"Expression: %s\nFunction: %s\nFile: %s\nLine: %u\n", expression, function, file, line);
-		assert(0);
-	});
 	AllocConsole();
 	freopen("CONOUT$", "w", stdout);
+	freopen("CONOUT$", "w", stderr);
 	freopen("CONIN$", "r", stdin);
-	SetConsoleCP(1251);
 	SetConsoleOutputCP(1251);
-
-	//for (u32 i=0; i < 256; ++i) {
-	//	printf("%u\n", randomU8((u8)i));
-	//}
-#if 1
-	{
-		f32 test[4] {
-			0,1,2,3
-		};
-		assert(linearSample(test, 0) == 0);
-		assert(linearSample(test, 0.125f) == 0.5f);
-		assert(linearSample(test, 0.25f) == 1);
-		assert(linearSample(test, 0.375f) == 1.5f);
-		assert(linearSample(test, 0.5f) == 2);
-		assert(linearSample(test, 0.625f) == 2.5);
-		assert(linearSample(test, 0.75f) == 3);
-		assert(linearSample(test, 0.875f) == 1.5f);
-		assert(linearSample(test, 1) == 0);
-	}
-#endif
-	{
-		assert(frac(-6, 5) == 4);
-		assert(frac(-5, 5) == 0);
-		assert(frac(-4, 5) == 1);
-		assert(frac(-3, 5) == 2);
-		assert(frac(-2, 5) == 3);
-		assert(frac(-1, 5) == 4);
-		assert(frac( 0, 5) == 0);
-		assert(frac( 1, 5) == 1);
-		assert(frac( 2, 5) == 2);
-		assert(frac( 3, 5) == 3);
-		assert(frac( 4, 5) == 4);
-		assert(frac( 5, 5) == 0);
-		assert(frac( 6, 5) == 1);
-		assert(floor(-6, 3) == -2);
-		assert(floor(-5, 3) == -2);
-		assert(floor(-4, 3) == -2);
-		assert(floor(-3, 3) == -1);
-		assert(floor(-2, 3) == -1);
-		assert(floor(-1, 3) == -1);
-		assert(floor( 0, 3) == 0);
-		assert(floor( 1, 3) == 0);
-		assert(floor( 2, 3) == 0);
-		assert(floor( 3, 3) == 1);
-		assert(floor( 4, 3) == 1);
-		assert(floor( 5, 3) == 1);
-		assert(floor( 6, 3) == 2);
-	}
 #if 0
 	for (int x = 0; x < CHUNK_WIDTH * 2; ++x) for (int y = 0; y < CHUNK_WIDTH * 2; ++y) for (int z = 0; z < CHUNK_WIDTH * 2; ++z) {
 		auto c = chunkPosFromBlock(V3i{x,y,z});
@@ -1302,15 +866,15 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	Window window;
 	window.clientSize = {1280,720};
 	WH::Rect windowRect;
-	windowRect.xywh((screenWidth - (LONG)window.clientSize.x) / 2,
-		(screenHeight - (LONG)window.clientSize.y) / 2,
-					(LONG)window.clientSize.x,
-					(LONG)window.clientSize.y);
+	windowRect.setXYWH((screenWidth - (LONG)window.clientSize.x) / 2,
+					   (screenHeight - (LONG)window.clientSize.y) / 2,
+					   (LONG)window.clientSize.x,
+					   (LONG)window.clientSize.y);
 
 	AdjustWindowRect(&windowRect, WINDOW_STYLE, 0);
 
 	window.hwnd = CreateWindowExA(0, wndClass.lpszClassName, "Galaxy Storm", WINDOW_STYLE,
-								windowRect.left, windowRect.top, windowRect.width(), windowRect.height(), 0, 0, instance, &window);
+								windowRect.left, windowRect.top, windowRect.getWidth(), windowRect.getHeight(), 0, 0, instance, &window);
 	assert(window.hwnd);
 
 	SetForegroundWindow(window.hwnd);
@@ -1323,80 +887,113 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		assert(0);
 	}
 
-	Renderer renderer(window.hwnd, window.clientSize * superSampleWidth);
-	renderer.deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	D3D11 renderer(window.hwnd);
+	renderer.setPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-	ID3D11RenderTargetView* backBuffer = 0;
-	ID3D11DepthStencilView* depthView = 0;
-	ID3D11Texture2D* depthTex = 0;
+	FutureQueue<ID3D11ShaderResourceView*> textureFStack;
+	FutureQueue<ID3D11VertexShader*> vShaderFStack;
+	FutureQueue<ID3D11PixelShader*> pShaderFStack;
 
-	ID3D11VertexShader* chunkVS = renderer.createVertexShader(LDATA "shaders/chunk.hlsl");
-	ID3D11PixelShader*  chunkPS = renderer.createPixelShader (LDATA "shaders/chunk.hlsl");
+	textureFStack.push(renderer.loadTextureAsync(DATA "textures/atlas.png"));
+	textureFStack.push(renderer.loadTextureAsync(DATA "textures/atlas_normal.png"));
+	textureFStack.push(renderer.loadTextureAsync(DATA "textures/selection.png"));
 
-	ID3D11VertexShader* blockVS = renderer.createVertexShader(LDATA "shaders/block.hlsl");
-	ID3D11PixelShader*  blockPS = renderer.createPixelShader (LDATA "shaders/block.hlsl");
+	ID3D11VertexShader* chunkVS;
+	ID3D11PixelShader* chunkPS;
 
-	ID3D11VertexShader* skyVS = renderer.createVertexShader(LDATA "shaders/sky.hlsl");
-	ID3D11PixelShader*  skyPS = renderer.createPixelShader (LDATA "shaders/sky.hlsl");
+	ID3D11VertexShader* blockVS;
+	ID3D11PixelShader* blockPS;
 
-	ID3D11VertexShader* sunVS = renderer.createVertexShader(LDATA "shaders/sun.hlsl");
-	ID3D11PixelShader*  sunPS = renderer.createPixelShader (LDATA "shaders/sun.hlsl");
+	ID3D11VertexShader* skyVS;
+	ID3D11PixelShader* skyPS;
 
-	ID3D11VertexShader* blitVS = 0;
-	ID3D11PixelShader*  blitPS = 0;
-	{
-		char buf[2] {};
-		buf[0] = (char)('0' + superSampleWidth);
-		D3D_SHADER_MACRO defines[2] {
-			{"BLIT_SS", buf},
-			{}
-		};
-		blitVS = renderer.createVertexShader(LDATA "shaders/blit.hlsl", defines);
-		blitPS = renderer.createPixelShader (LDATA "shaders/blit.hlsl", defines);
-	}
+	ID3D11VertexShader* sunVS;
+	ID3D11PixelShader* sunPS;
+
+	ID3D11VertexShader* blitVS;
+	ID3D11PixelShader* blitPS;
+
+	auto compileShaders = [&]() {
+		vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/chunk.hlsl"));
+		vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/block.hlsl"));
+		vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/sky.hlsl"));
+		vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/sun.hlsl"));
+
+		pShaderFStack.push(renderer.createPixelShaderAsync(LDATA "shaders/chunk.hlsl"));
+		pShaderFStack.push(renderer.createPixelShaderAsync(LDATA "shaders/block.hlsl"));
+		pShaderFStack.push(renderer.createPixelShaderAsync(LDATA "shaders/sky.hlsl"));
+		pShaderFStack.push(renderer.createPixelShaderAsync(LDATA "shaders/sun.hlsl"));
+
+		{
+			char buf[2] {};
+			buf[0] = (char)('0' + superSampleWidth);
+			std::vector<D3D_SHADER_MACRO> defines {
+				{"BLIT_SS", buf},
+				{}
+			};
+			vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/blit.hlsl", defines));
+			pShaderFStack.push(renderer.createPixelShaderAsync (LDATA "shaders/blit.hlsl", defines));
+		}
+		chunkVS = vShaderFStack.pop();
+		blockVS = vShaderFStack.pop();
+		skyVS   = vShaderFStack.pop();
+		sunVS   = vShaderFStack.pop();
+
+		chunkPS = pShaderFStack.pop();
+		blockPS = pShaderFStack.pop();
+		skyPS   = pShaderFStack.pop();
+		sunPS   = pShaderFStack.pop();
+
+		blitVS  = vShaderFStack.pop();
+		blitPS  = pShaderFStack.pop();
+
+		puts("Shaders compiled");
+	};
+	auto freeShaders = [&]() {
+		chunkVS->Release();
+		chunkPS->Release();
+		blockVS->Release();
+		blockPS->Release();
+		skyVS  ->Release();
+		skyPS  ->Release();
+		sunVS  ->Release();
+		sunPS  ->Release();
+		blitVS ->Release();
+		blitPS ->Release();
+	};
+	compileShaders();
+
+	ID3D11ShaderResourceView* atlasTex       = textureFStack.pop();
+	ID3D11ShaderResourceView* atlasNormalTex = textureFStack.pop();
+	ID3D11ShaderResourceView* selectionTex   = textureFStack.pop();
+	puts("Textures loaded");
 
 	f32 farClipPlane = 1000;
 
-	CBuffer<0, DrawCBuffer>   drawCBuffer  {renderer};
-	CBuffer<1, FrameCBuffer>  frameCBuffer {renderer};
-	CBuffer<2, SceneCBuffer>  sceneCBuffer {renderer};
-	CBuffer<3, ScreenCBuffer> screenCBuffer{renderer};
+	ID3D11RenderTargetView* backBuffer = 0;
+	D3D11::DepthStencilView depthView;
+
+	D3D11::ConstantBuffer<DrawCBuffer  > drawCBuffer  ;
+	D3D11::ConstantBuffer<FrameCBuffer > frameCBuffer ;
+	D3D11::ConstantBuffer<SceneCBuffer > sceneCBuffer ;
+	D3D11::ConstantBuffer<ScreenCBuffer> screenCBuffer;
 
 	sceneCBuffer.fogDistance = (f32)chunkDrawDistance * CHUNK_WIDTH;
+	
+	drawCBuffer  .create(renderer, D3D11_USAGE_DYNAMIC);
+	frameCBuffer .create(renderer, D3D11_USAGE_DYNAMIC);
+	sceneCBuffer .create(renderer, D3D11_USAGE_IMMUTABLE);
+	screenCBuffer.create(renderer, D3D11_USAGE_DYNAMIC);
 
-	drawCBuffer.createDynamic();
-	drawCBuffer.bindV();
-	drawCBuffer.bindP();
-	frameCBuffer.createDynamic();
-	frameCBuffer.bindV();
-	frameCBuffer.bindP();
-	sceneCBuffer.createImmutable();
-	sceneCBuffer.bindV();
-	sceneCBuffer.bindP();
-	screenCBuffer.createDynamic();
-	screenCBuffer.bindV();
-	screenCBuffer.bindP();
+	renderer.bindConstantBuffersV(0, drawCBuffer, frameCBuffer, sceneCBuffer, screenCBuffer);
+	renderer.bindConstantBuffersP(0, drawCBuffer, frameCBuffer, sceneCBuffer, screenCBuffer);
 
 	M4 projection;
 
-	blockInfos[BLOCK_DIRT] = {2, BlockInfo::Type::default, {1,1,1,1,1,1}};
-	blockInfos[BLOCK_GRASS] = {0, BlockInfo::Type::topSideBottom, {0,0,1,1,0,0}};
-	blockInfos[BLOCK_TALL_GRASS] = {3, BlockInfo::Type::x};
-
-	auto vertsFromFaces = [](const std::vector<Vertex>& verts) {
-		std::vector<Vertex> result;
-		assert(verts.size() % 4 == 0);
-		result.reserve(verts.size() / 2 * 3);
-		for (int i=0; i < verts.size(); i+=4) {
-			result.push_back(verts[i + 0]);
-			result.push_back(verts[i + 1]);
-			result.push_back(verts[i + 2]);
-			result.push_back(verts[i + 1]);
-			result.push_back(verts[i + 3]);
-			result.push_back(verts[i + 2]);
-		}
-		return result;
-	};
+	blockInfos[BLOCK_DIRT] = {2, {}, BlockInfo::Type::default, {1,1,1,1,1,1}};
+	blockInfos[BLOCK_GRASS] = {0, {1,1,0,2,1,1}, BlockInfo::Type::topSideBottom, {0,0,1,1,0,0}};
+	blockInfos[BLOCK_TALL_GRASS] = {3, {}, BlockInfo::Type::x};
+	//blockInfos[BLOCK_WATER] = {4, {}, BlockInfo::Type::water};
 
 	{
 		const V3 positions[8]{
@@ -1409,38 +1006,36 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			{-0.5,-0.5, 0.5},
 			{-0.5,-0.5,-0.5},
 		};
-		blockMesh.load(renderer, DATA "mesh/block.mesh",
-					   vertsFromFaces({{positions[5], V2{0,1}}, {positions[1], V2{1,1}},// -z
-									   {positions[7], V2{0,0}}, {positions[3], V2{1,0}},
-									   {positions[0], V2{0,1}}, {positions[4], V2{1,1}},// +z
-									   {positions[2], V2{0,0}}, {positions[6], V2{1,0}},
-									   {positions[7], V2{0,1}}, {positions[3], V2{1,1}},// -y
-									   {positions[6], V2{0,0}}, {positions[2], V2{1,0}},
-									   {positions[4], V2{0,1}}, {positions[0], V2{1,1}},// +y
-									   {positions[5], V2{0,0}}, {positions[1], V2{1,0}},
-									   {positions[4], V2{0,1}}, {positions[5], V2{1,1}},// -x
-									   {positions[6], V2{0,0}}, {positions[7], V2{1,0}},
-									   {positions[1], V2{0,1}}, {positions[0], V2{1,1}},// +x
-									   {positions[3], V2{0,0}}, {positions[2], V2{1,0}},
-									  }));
+		blockMesh.load(renderer, triangulateQuads(std::array<Vertex, 24> {
+			Vertex{positions[5], V2{0,1}}, {positions[1], V2{1,1}},// -z
+			Vertex{positions[7], V2{0,0}}, {positions[3], V2{1,0}},
+			Vertex{positions[0], V2{0,1}}, {positions[4], V2{1,1}},// +z
+			Vertex{positions[2], V2{0,0}}, {positions[6], V2{1,0}},
+			Vertex{positions[7], V2{0,1}}, {positions[3], V2{1,1}},// -y
+			Vertex{positions[6], V2{0,0}}, {positions[2], V2{1,0}},
+			Vertex{positions[4], V2{0,1}}, {positions[0], V2{1,1}},// +y
+			Vertex{positions[5], V2{0,0}}, {positions[1], V2{1,0}},
+			Vertex{positions[4], V2{0,1}}, {positions[5], V2{1,1}},// -x
+			Vertex{positions[6], V2{0,0}}, {positions[7], V2{1,0}},
+			Vertex{positions[1], V2{0,1}}, {positions[0], V2{1,1}},// +x
+			Vertex{positions[3], V2{0,0}}, {positions[2], V2{1,0}},
+		}));
 	}
-	ID3D11ShaderResourceView* atlasTex       = renderer.createTexture(DATA "textures/atlas.png");
-	ID3D11ShaderResourceView* atlasNormalTex = renderer.createTexture(DATA "textures/atlas_normal.png");
-	ID3D11ShaderResourceView* selectionTex   = renderer.createTexture(DATA "textures/selection.png");
+	ID3D11SamplerState* pointSamplerState = renderer.createSamplerState(D3D11_TEXTURE_ADDRESS_WRAP, D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR, 3);
+	ID3D11SamplerState* linearSamplerState = renderer.createSamplerState(D3D11_TEXTURE_ADDRESS_WRAP, D3D11_FILTER_MIN_MAG_MIP_LINEAR, 3);
+	renderer.psSetSampler(0, pointSamplerState);
+	renderer.psSetSampler(1, linearSamplerState);
 
-	ID3D11SamplerState* samplerState = renderer.createSamplerState(D3D11_TEXTURE_ADDRESS_WRAP, D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR, 3);
-	renderer.deviceContext->PSSetSamplers(0, 1, &samplerState);
+	//ID3D11BlendState* alphaBlendPreserve = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA,
+	//																 D3D11_BLEND_OP_ADD, D3D11_BLEND_ZERO, D3D11_BLEND_ONE);
+	//ID3D11BlendState* alphaBlendOverwrite = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA,
+	//																  D3D11_BLEND_OP_ADD, D3D11_BLEND_ONE, D3D11_BLEND_ZERO);
+	//ID3D11BlendState* alphaBlendInvertedOverwrite = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_SRC_ALPHA,
+	//																		  D3D11_BLEND_OP_ADD, D3D11_BLEND_ONE, D3D11_BLEND_ZERO);
+	//ID3D11BlendState* sunBlend = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_INV_DEST_ALPHA, D3D11_BLEND_DEST_ALPHA,
+	//													   D3D11_BLEND_OP_ADD, D3D11_BLEND_ZERO, D3D11_BLEND_ONE);
 
-	ID3D11BlendState* alphaBlendPreserve = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA,
-																	 D3D11_BLEND_OP_ADD, D3D11_BLEND_ZERO, D3D11_BLEND_ONE);
-	ID3D11BlendState* alphaBlendOverwrite = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA,
-																	  D3D11_BLEND_OP_ADD, D3D11_BLEND_ONE, D3D11_BLEND_ZERO);
-	ID3D11BlendState* alphaBlendInvertedOverwrite = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_SRC_ALPHA,
-																			  D3D11_BLEND_OP_ADD, D3D11_BLEND_ONE, D3D11_BLEND_ZERO);
-	ID3D11BlendState* sunBlend = renderer.createBlendState(D3D11_BLEND_OP_ADD, D3D11_BLEND_INV_DEST_ALPHA, D3D11_BLEND_DEST_ALPHA,
-														   D3D11_BLEND_OP_ADD, D3D11_BLEND_ZERO, D3D11_BLEND_ONE);
-
-	RenderTarget renderTargets[2];
+	D3D11::RenderTarget renderTargets[2];
 
 	f32 blendFactor[4] {1,1,1,1};
 
@@ -1549,7 +1144,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 	f32 stepLerp = 0.0f;
 
-	char windowTitle[256] {};
+	char windowTitle[512] {};
 
 #define BOT 0
 
@@ -1565,10 +1160,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 					u8 code = (u8)msg.wParam;
 					assert(code == msg.wParam);
 
-					bool extended   =  (msg.lParam & (1 << 24)) != 0;
-					bool context    =  (msg.lParam & (1 << 29)) != 0;
-					bool previous   =  (msg.lParam & (1 << 30)) != 0;
-					bool transition =  (msg.lParam & (1 << 31)) != 0;
+					//bool extended   =  (msg.lParam & u32(1 << 24)) != 0;
+					bool context    =  (msg.lParam & u32(1 << 29)) != 0;
+					bool previous   =  (msg.lParam & u32(1 << 30)) != 0;
+					bool transition =  (msg.lParam & u32(1 << 31)) != 0;
 					if (previous == transition) { // Don't handle repeated
 						//printf("INPUT: Code: 0X%x, Char: %c, extended: %i, context: %i, previous: %i, transition: %i\n", 
 						//       Code, Code, extended, context, previous, transition);
@@ -1618,9 +1213,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 				memset(input.current.mouse, 0, sizeof(input.current.mouse));
 			}
 		}
-
-		static f32 time = 0;
-		time += targetFrameTime;
 
 		stepLerp = max(stepLerp - targetFrameTime * 10, 0.0f);
 
@@ -1841,12 +1433,22 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			loadWorld();
 		}
 
+		if (input.keyDown('R')) {
+			freeShaders();
+			compileShaders();
+		}
+
 		auto cameraPos = playerPos.relPos;
 		cameraPos.y += camHeight;
 		cameraPos.y -= stepLerp;
 		V3 viewDir = M4::rotationZXY(-cameraRot) * V3 { 0, 0, 1 };
 
-		float dayTime = time / (60 * 1);
+		const f32 dayPeriod = 10; // minutes
+		const f32 startHours = 6;
+		static f32 time = dayPeriod * 60 * (startHours / 24);
+		time += targetFrameTime;
+
+		float dayTime = time / (60 * dayPeriod);
 		
 		static constexpr V3 skyColors[] {
 			{.1,.1,.2},
@@ -1861,11 +1463,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		static constexpr V3 sunColors[] {
 			{0, 0, 0},
 			{0, 0, 0},
-			{1.5,.75, 0},
+			{1.5,.75,.1},
 			{1, 1, 1},
 			{1, 1, 1},
 			{1, 1, 1},
-			{1.5,.75, 0},
+			{1.5,.75,.1},
 			{0, 0, 0},
 		};
 		frameCBuffer.camPos = cameraPos;
@@ -1875,104 +1477,94 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		frameCBuffer.skyColor = linearSample(skyColors, dayTime);
 		frameCBuffer.earthBloomMult = max(abs(frac(dayTime + 0.5f) - 0.5f) * 4 - 1, 0.0f);
 		frameCBuffer.sunBloomMult = max(abs(frac(dayTime * 2 + 0.5f) - 0.5f) * 4 - 1, 0.0f);
-		frameCBuffer.update();
+		frameCBuffer.update(renderer);
 
 		if (window.resize) {
 			window.resize = false;
 
-			if (backBuffer) {
-				backBuffer->Release();
-				depthView->Release();
-				depthTex->Release();
-			}
+			depthView.release();
 
-			DHR(renderer.swapChain->ResizeBuffers(2, window.clientSize.x, window.clientSize.y, DXGI_FORMAT_UNKNOWN, 0));
+			renderer.resize(backBuffer, window.clientSize);
 
-			ID3D11Texture2D* backBufferTexture = 0;
-			DHR(renderer.swapChain->GetBuffer(0, IID_PPV_ARGS(&backBufferTexture)));
-			DHR(renderer.device->CreateRenderTargetView(backBufferTexture, 0, &backBuffer));
-			backBufferTexture->Release();
-
-			D3D11_TEXTURE2D_DESC desc {};
-			desc.ArraySize = 1;
-			desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-			desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-			desc.Width = window.clientSize.x * superSampleWidth;
-			desc.Height = window.clientSize.y * superSampleWidth;
-			desc.MipLevels = 1;
-			desc.SampleDesc = {1, 0};
-			DHR(renderer.device->CreateTexture2D(&desc, 0, &depthTex));
-			DHR(renderer.device->CreateDepthStencilView(depthTex, 0, &depthView));
+			depthView = renderer.createDepthStencilView(window.clientSize * superSampleWidth);
 
 			projection = M4::projection((f32)window.clientSize.x / window.clientSize.y, DEG2RAD(75), 0.01f, farClipPlane);
+			screenCBuffer.projection = projection;
 
 			for (auto& rt : renderTargets)
 				rt = renderer.createRenderTarget(window.clientSize * superSampleWidth);
 
 			f32 ssOff = 0.0f;
 			switch (superSampleWidth) {
-				case 2: ssOff = 0.25f; break;
 				case 3: ssOff = 1.0f / 3.0f; break;
-				case 4: ssOff = 0.125f; break;
+				case 4: ssOff = 0.25f; break;
 			}
 			auto invScreenSize = V2 {1} / V2 {window.clientSize};
 			screenCBuffer.invScreenSize = invScreenSize / (f32)superSampleWidth;
 			screenCBuffer.sampleOffset = invScreenSize * ssOff;
-			screenCBuffer.update();
+			screenCBuffer.update(renderer);
 		}
-		auto matrixCamRotProj = projection * M4::rotationYXZ(cameraRot);
-		auto matrixVP = matrixCamRotProj * M4::translation(-cameraPos);
+		auto matrixCamPos = M4::translation(-cameraPos);
+		auto matrixCamRot = M4::rotationYXZ(cameraRot);
+		auto matrixCamRotProj = projection * matrixCamRot;
+		auto matrixView = matrixCamRot * matrixCamPos;
+		auto matrixVP = matrixCamRotProj * matrixCamPos;
 
 		FrustumPlanes frustumPlanes { matrixVP };
 		frustumPlanes.normalize();
 		static std::vector<Chunk*> chunksToDraw;
 		chunksToDraw.clear();
-		for (auto& [pos,c] : world.loadedChunks) {
+
+		world.chunkArena.for_each([&](Chunk* c) {
 			if (frustumPlanes.containsSphere(V3 {(c->position - playerPos.chunkPos) * CHUNK_WIDTH + CHUNK_WIDTH / 2}, CHUNK_WIDTH / 2 * ROOT3)) {
 				chunksToDraw.push_back(c);
 			}
-		}
+		});
 		std::sort(chunksToDraw.begin(), chunksToDraw.end(), [&](Chunk* a, Chunk* b) {
 			return V3 {a->position - playerPos.chunkPos}.lengthSqr() < V3 {b->position - playerPos.chunkPos}.lengthSqr();
 		});
 
-		renderer.deviceContext->ClearRenderTargetView(backBuffer, V4 {1}.data());
-		renderer.deviceContext->ClearRenderTargetView(renderTargets[0].rt, V4 {1}.data());
-		renderer.deviceContext->ClearRenderTargetView(renderTargets[1].rt, V4 {1}.data());
-		renderer.deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+		renderer.clearRenderTargetView(backBuffer, V4 {1});
+		renderer.clearRenderTargetView(renderTargets[0].rt, V4 {1});
+		renderer.clearRenderTargetView(renderTargets[1].rt, V4 {1});
+		renderer.clearDepthStencilView(depthView.view, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
-		renderer.deviceContext->OMSetRenderTargets(1, &renderTargets[0].rt, depthView);
+		renderer.setRenderTarget(renderTargets[0].rt, depthView.view);
 		renderer.setViewport(window.clientSize* superSampleWidth);
 
-		renderer.deviceContext->PSSetShaderResources(2, 1, &atlasTex);
-		renderer.deviceContext->PSSetShaderResources(3, 1, &atlasNormalTex);
+		renderer.psSetShaderResource(2, atlasTex);
+		renderer.psSetShaderResource(3, atlasNormalTex);
 #if 0
-		renderer.deviceContext->VSSetShader(approxVS, 0, 0);
-		renderer.deviceContext->PSSetShader(approxPS, 0, 0);
+		renderer.vsSetShader(approxVS);
+		renderer.psSetShader(approxPS);
 		for (auto& c : chunksToDraw) {
 			c->drawApprox(drawCBuffer);
 		}
 		renderer.deviceContext->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH, 1.0f, 0);
 #endif
-		renderer.deviceContext->VSSetShader(chunkVS, 0, 0);
-		renderer.deviceContext->PSSetShader(chunkPS, 0, 0);
+		renderer.vsSetShader(chunkVS);
+		renderer.psSetShader(chunkPS);
+		
+		drawCBuffer.camRotProjection = matrixCamRotProj;
+
 		for (auto& c : chunksToDraw) {
-			c->draw(drawCBuffer, playerPos.chunkPos, matrixVP);
+			c->draw(drawCBuffer, playerPos.chunkPos, matrixVP, matrixCamPos);
 		}
 
 		{
 			V3i placePos, breakPos;
 			Hit hit;
-			if (raycast(cameraPos, cameraPos + viewDir * 3, hit, placePos, [](const BlockID& b) {return b != BLOCK_AIR; })) {
+			if (raycast(cameraPos, cameraPos + viewDir * 3, hit, placePos, isBreakable)) {
 				breakPos = placePos;
 				placePos += (V3i)hit.n;
 				drawCBuffer.model = M4::translation((V3)breakPos) * M4::scaling(1.01f);
+				drawCBuffer.modelCamPos = matrixCamPos * drawCBuffer.model;
 				drawCBuffer.mvp = matrixVP * drawCBuffer.model;
 				drawCBuffer.solidColor = {0,0,0,0.5};
-				drawCBuffer.update();
-				renderer.deviceContext->VSSetShader(blockVS, 0, 0);
-				renderer.deviceContext->PSSetShader(blockPS, 0, 0);
-				renderer.deviceContext->PSSetShaderResources(2, 1, &selectionTex);
+				drawCBuffer.update(renderer);
+				renderer.vsSetShader(blockVS);
+				renderer.psSetShader(blockPS);
+				renderer.psSetShaderResource(2, selectionTex);
 				//renderer.deviceContext->OMSetBlendState(alphaBlendOverwrite, blendFactor, 0xFFFFFFFF);
 				blockMesh.draw(renderer);
 				//renderer.deviceContext->OMSetBlendState(0, blendFactor, 0xFFFFFFFF);
@@ -1988,35 +1580,35 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		}
 		drawCBuffer.mvp = matrixCamRotProj;
 		drawCBuffer.solidColor = 1;
-		drawCBuffer.update();
+		drawCBuffer.update(renderer);
 
 		// SUN
-		renderer.deviceContext->VSSetShader(sunVS, 0, 0);
-		renderer.deviceContext->PSSetShader(sunPS, 0, 0);
+		renderer.vsSetShader(sunVS);
+		renderer.psSetShader(sunPS);
 		renderer.draw(36);
 
-		renderer.deviceContext->OMSetRenderTargets(1, &renderTargets[1].rt, 0);
-		renderer.deviceContext->PSSetShaderResources(0, 1, &renderTargets[0].sr);
+		renderer.setRenderTarget(renderTargets[1].rt, 0);
+		renderer.psSetShaderResource(0, renderTargets[0].sr);
 
 		// SKY
-		renderer.deviceContext->VSSetShader(skyVS, 0, 0);
-		renderer.deviceContext->PSSetShader(skyPS, 0, 0);
+		renderer.vsSetShader(skyVS);
+		renderer.psSetShader(skyPS);
 		renderer.draw(36);
 
 		renderer.setViewport(window.clientSize);
-		renderer.deviceContext->OMSetRenderTargets(1, &backBuffer, 0);
+		renderer.setRenderTarget(backBuffer, 0);
 		
 		// BLIT
 		renderer.setViewport(window.clientSize);
-		renderer.deviceContext->VSSetShader(blitVS, 0, 0);
-		renderer.deviceContext->PSSetShader(blitPS, 0, 0);
-		renderer.deviceContext->PSSetShaderResources(0, 1, &renderTargets[1].sr);
+		renderer.vsSetShader(blitVS);
+		renderer.psSetShader(blitPS);
+		renderer.psSetShaderResource(0, renderTargets[1].sr);
 		//renderer.deviceContext->OMSetBlendState(alphaBlendInvertedOverwrite, blendFactor, 0xFFFFFFFF);
 		renderer.draw(3);
 		//renderer.deviceContext->OMSetBlendState(0, blendFactor, 0xFFFFFFFF);
 
 		ID3D11ShaderResourceView* null = 0;
-		renderer.deviceContext->PSSetShaderResources(0, 1, &null);
+		renderer.psSetShaderResource(0, null);
 
 		if (input.keyDown(VK_ESCAPE)) {
 			ClipCursor(0);
@@ -2031,6 +1623,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			puts("Block: BLOCK_GRASS");
 		}
 #if 0
+		DHR(renderer.swapChain->Present(0, 0));
 		auto workCounter = WH::getPerformanceCounter();
 		auto workSecondsElapsed = WH::getSecondsElapsed(lastCounter, workCounter, counterFrequency);
 		if (workSecondsElapsed < targetFrameTime) {
@@ -2047,39 +1640,38 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		else {
 			//puts("Low framerate!");
 		}
+#else
+		renderer.present(1);
+#endif
 		auto endCounter = WH::getPerformanceCounter();
 		f32 frameTime = WH::getSecondsElapsed(lastCounter, endCounter, counterFrequency);
 		lastCounter = endCounter;
-		DHR(renderer.swapChain->Present(0, 0));
-#else
-		DHR(renderer.swapChain->Present(1, 0));
-#endif
+
 		static u32 meshesBuiltInSec = 0;
 		static f32 generateMS = 0;
 		static f32 buildMeshMS = 0;
 		static f32 secondTimer = 0;
 
 		secondTimer += targetFrameTime;
-		if (secondTimer >= 1) {
-			secondTimer -= 1;
+
+		if (secondTimer >= 10) {
+			secondTimer -= 10;
 			generateMS = (f32)generateTime / generateCount / counterFrequency * 1000.f;
 			buildMeshMS = (f32)buildMeshTime / buildMeshCount / counterFrequency * 1000.f;
 			meshesBuiltInSec = meshesBuilt.exchange(0);
 		}
-		auto ram = ramUsage.load();
-		auto [ramValue, ramUnit] = normalizeBytes<double>(ram);
-		auto [vramValue, vramUnit] = normalizeBytes<double>(vramUsage.load());
-		debugGenerateMutex.lock();
-		debugBuildMeshMutex.lock();
-		sprintf(windowTitle, "gstorm - Position: (%i/%i/%i) (%.2f/%.2f/%.2f), RAM usage: %.3f %s, VRAM usage: %.3f %s, Draws: %u/f, Gen. time: %.3fms/c, Mesh time: %.3fms/c, Loaded chunks: %zu, Meshes built: %u/s", 
+		PROCESS_MEMORY_COUNTERS pmc;
+		GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+		
+		auto [ramValue, ramUnit] = normalizeBytes<double>(pmc.WorkingSetSize);
+		auto [vramValue, vramUnit] = normalizeBytes<double>(renderer.getVRAM());
+		sprintf(windowTitle, "gstorm - FPS: %.1f, Position: (%i/%i/%i) (%.2f/%.2f/%.2f), RAM usage: %.3f %s, VRAM usage: %.3f %s, Draws: %u/f, Gen. time: %.3fms/c, Mesh time: %.3fms/c, Loaded chunks: %zu, Meshes built: %u/s",
+				1.f / frameTime,
 				playerPos.chunkPos.x, playerPos.chunkPos.y, playerPos.chunkPos.z,
 				playerPos.relPos.x, playerPos.relPos.y, playerPos.relPos.z,
-				ramValue, ramUnit, vramValue, vramUnit, renderer.getDrawCalls(), generateMS, buildMeshMS, ram / (CHUNK_SIZE + sizeof(Chunk)), meshesBuiltInSec);
-		debugBuildMeshMutex.unlock();
-		debugGenerateMutex.unlock();
+				ramValue, ramUnit, vramValue, vramUnit, renderer.getDrawCalls(), generateMS, buildMeshMS, pmc.WorkingSetSize / (CHUNK_SIZE + sizeof(Chunk)), meshesBuiltInSec);
 		SetWindowText(window.hwnd, windowTitle);
 	}
-	world.stopWork = true;
 	ClipCursor(0);
 	SetCursor(LoadCursorA(0, IDC_ARROW));
 	DestroyWindow(window.hwnd);

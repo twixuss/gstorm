@@ -11,6 +11,8 @@
 cbuffer draw : register(b0) {
 	matrix mvp;
 	matrix model;
+	matrix modelCamPos;
+	matrix camRotProjection;
 	float4 solidColor;
 }
 cbuffer frame : register(b1) {
@@ -30,21 +32,36 @@ cbuffer scene : register(b2) {
 	float fogDistance;
 }
 cbuffer screen : register(b3) {
+	matrix projection;
 	float2 sampleOffset;
 	float2 invScreenSize;
 }
 float getFog(float dist) {
 	return min(dist / fogDistance, 1);
 }
-#define MAP(type)                                       \
-type map(type v, type si, type sa, type di, type da) {  \
-	return (v - si) / (sa - si) * (da - di) + di;       \
-}
-
-MAP(float)
-MAP(float2)
-MAP(float3)
-MAP(float4)
+#define DECLOV DECLFN(float) DECLFN(float2) DECLFN(float3) DECLFN(float4)
+#define DECLFN(type) type map(type v,type sn,type sx,type dn,type dx){return(v-sn)/(sx-sn)*(dx-dn)+dn;}
+DECLOV
+#undef DECLFN
+#define DECLFN(type) type pow2(type v){return v*v;}
+DECLOV
+#undef DECLFN
+#define DECLFN(type) type pow3(type v){return v*v*v;}
+DECLOV
+#undef DECLFN
+#define DECLFN(type) type pow4(type v){return v*v*v*v;}
+DECLOV
+#undef DECLFN
+#define DECLFN(type) type pow2i(type v){return 1-pow2(1-v);}
+DECLOV
+#undef DECLFN
+#define DECLFN(type) type pow3i(type v){return 1-pow3(1-v);}
+DECLOV
+#undef DECLFN
+#define DECLFN(type) type pow4i(type v){return 1-pow4(1-v);}
+DECLOV
+#undef DECLFN
+#undef DECLOV
 
 float3 calcNormal(float3 normal, float3 tangent, float3 bitangent, float3 tangentSpaceNormal) {
 	return normalize(
@@ -60,5 +77,8 @@ float3 calcNormal(float3 normal, float3 tangent, float3 tangentSpaceNormal) {
 float sdot(float2 a, float2 b) { return saturate(dot(a, b)); }
 float sdot(float3 a, float3 b) { return saturate(dot(a, b)); }
 float sdot(float4 a, float4 b) { return saturate(dot(a, b)); }
+
+SamplerState pointSamplerState : register(s0);
+SamplerState linearSamplerState : register(s1);
 
 #endif

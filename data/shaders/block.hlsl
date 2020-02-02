@@ -9,14 +9,13 @@ struct Vertex {
 };
 StructuredBuffer<Vertex> vertices : register(t0);
 Texture2D albedoTex : register(t2);
-SamplerState samplerState : register(s0);
 void vMain(in uint id : SV_VertexID, out V2P o) {
 	Vertex v = vertices[id];
 	o.position = mul(mvp, float4(v.position, 1));
 	o.uv = v.uv;
 }
 void pMain(in V2P i, out float4 oColor : SV_Target) {
-	float4 color = albedoTex.Sample(samplerState, i.uv);
+	float4 color = albedoTex.Sample(pointSamplerState, i.uv);
 	clip(color.a - .5);
 	color.a = 0;
 	oColor = color;

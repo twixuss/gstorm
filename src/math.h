@@ -10,6 +10,9 @@
 #define ROOT2 1.414213538f
 #define ROOT3 1.732050776f
 
+template<class T> ce T min(T a, T b) { return a < b ? a : b; }
+template<class T> ce T max(T a, T b) { return a > b ? a : b; }
+
 struct V2i;
 struct V3i;
 struct V4i;
@@ -102,21 +105,21 @@ struct alignas(16) V4 {
 	f32 y = 0;
 	f32 z = 0;
 	f32 w = 0;
-	V4() = default;
-	V4(f32 x, f32 y, f32 z, f32 w) : x(x), y(y), z(z), w(w) {}
-	V4(f32 v) : V4(v, v, v, v) {}
-	explicit V4(V4i b);
-	V4 operator+(V4 b) const { return {x + b.x,y + b.y,z + b.z,w + b.w}; }
-	V4 operator-(V4 b) const { return {x - b.x,y - b.y,z - b.z,w - b.w}; }
-	V4 operator*(V4 b) const { return {x * b.x,y * b.y,z * b.z,w * b.w}; }
-	V4 operator/(V4 b) const { return {x / b.x,y / b.y,z / b.z,w / b.w}; }
-	V4& operator+=(V4 b) { *this = *this + b; return *this; }
-	V4& operator-=(V4 b) { *this = *this - b; return *this; }
-	V4& operator*=(V4 b) { *this = *this * b; return *this; }
-	V4& operator/=(V4 b) { *this = *this / b; return *this; }
-	bool operator==(V4 b) const { return x == b.x && y == b.y && z == b.z && w == b.w; }
-	bool operator!=(V4 b) const { return !(*this == b); }
-	V4 operator-() {
+	ce V4() = default;
+	ce V4(f32 x, f32 y, f32 z, f32 w) : x(x), y(y), z(z), w(w) {}
+	ce V4(f32 v) : V4(v, v, v, v) {}
+	ce explicit V4(V4i b);
+	ce V4 operator+(V4 b) const { return {x + b.x,y + b.y,z + b.z,w + b.w}; }
+	ce V4 operator-(V4 b) const { return {x - b.x,y - b.y,z - b.z,w - b.w}; }
+	ce V4 operator*(V4 b) const { return {x * b.x,y * b.y,z * b.z,w * b.w}; }
+	ce V4 operator/(V4 b) const { return {x / b.x,y / b.y,z / b.z,w / b.w}; }
+	ce V4& operator+=(V4 b) { *this = *this + b; return *this; }
+	ce V4& operator-=(V4 b) { *this = *this - b; return *this; }
+	ce V4& operator*=(V4 b) { *this = *this * b; return *this; }
+	ce V4& operator/=(V4 b) { *this = *this / b; return *this; }
+	ce bool operator==(V4 b) const { return x == b.x && y == b.y && z == b.z && w == b.w; }
+	ce bool operator!=(V4 b) const { return !(*this == b); }
+	ce V4 operator-() {
 		return {-x,-y,-z,-w};
 	}
 	ce f32* data() { return &x; }
@@ -124,10 +127,10 @@ struct alignas(16) V4 {
 	friend std::ostream& operator<<(std::ostream & os, V4 v) {
 		return os << v.x << ", " << v.y << ", " << v.z << ", " << v.w;
 	}
-	f32 dot(V4 b) const {
+	ce f32 dot(V4 b) const {
 		return x * b.x + y * b.y + z * b.z + w * b.w;
 	}
-	f32 lengthSqr() const {
+	ce f32 lengthSqr() const {
 		return dot(*this);
 	}
 	f32 length() const {
@@ -194,23 +197,23 @@ struct V4i {
 	i32 y = 0;
 	i32 z = 0;
 	i32 w = 0;
-	V4i() = default;
-	V4i(i32 x, i32 y, i32 z, i32 w) : x(x), y(y), z(z), w(w) {}
-	V4i(i32 v) : V4i(v, v, v, v) {}
-	explicit V4i(V4 b);
-	V4i operator-() const { return {-x,-y,-z,-w}; }
-	V4i operator+(V4i b) const { return {x + b.x,y + b.y,z + b.z,w + b.w}; }
-	V4i operator-(V4i b) const { return {x - b.x,y - b.y,z - b.z,w - b.w}; }
-	V4i operator*(V4i b) const { return {x * b.x,y * b.y,z * b.z,w * b.w}; }
-	V4i operator/(V4i b) const { return {x / b.x,y / b.y,z / b.z,w / b.w}; }
-	V4i operator%(V4i b) const { return {x % b.x,y % b.y,z % b.z,w % b.w}; }
-	V4i& operator+=(V4i b) { *this = *this + b; return *this; }
-	V4i& operator-=(V4i b) { *this = *this - b; return *this; }
-	V4i& operator*=(V4i b) { *this = *this * b; return *this; }
-	V4i& operator/=(V4i b) { *this = *this / b; return *this; }
-	V4i& operator%=(V4i b) { *this = *this % b; return *this; }
-	bool operator==(V4i b) const { return x == b.x && y == b.y && z == b.z && w == b.w; }
-	bool operator!=(V4i b) const { return !(*this == b); }
+	ce V4i() = default;
+	ce V4i(i32 x, i32 y, i32 z, i32 w) : x(x), y(y), z(z), w(w) {}
+	ce V4i(i32 v) : V4i(v, v, v, v) {}
+	ce explicit V4i(V4 b);
+	ce V4i operator-() const { return {-x,-y,-z,-w}; }
+	ce V4i operator+(V4i b) const { return {x + b.x,y + b.y,z + b.z,w + b.w}; }
+	ce V4i operator-(V4i b) const { return {x - b.x,y - b.y,z - b.z,w - b.w}; }
+	ce V4i operator*(V4i b) const { return {x * b.x,y * b.y,z * b.z,w * b.w}; }
+	ce V4i operator/(V4i b) const { return {x / b.x,y / b.y,z / b.z,w / b.w}; }
+	ce V4i operator%(V4i b) const { return {x % b.x,y % b.y,z % b.z,w % b.w}; }
+	ce V4i& operator+=(V4i b) { *this = *this + b; return *this; }
+	ce V4i& operator-=(V4i b) { *this = *this - b; return *this; }
+	ce V4i& operator*=(V4i b) { *this = *this * b; return *this; }
+	ce V4i& operator/=(V4i b) { *this = *this / b; return *this; }
+	ce V4i& operator%=(V4i b) { *this = *this % b; return *this; }
+	ce bool operator==(V4i b) const { return x == b.x && y == b.y && z == b.z && w == b.w; }
+	ce bool operator!=(V4i b) const { return !(*this == b); }
 	V4i absolute() const {
 		return {
 			labs(x),
@@ -323,11 +326,9 @@ struct alignas(64) M4 {
 		};
 	}
 	//Roll, Pitch, Yaw (ZXY)
-	//Roll, Pitch, Yaw (ZXY)
 	static M4 rotationZXY(V3 v) {
 		return (rotationY(v.y) * rotationX(v.x)) * rotationZ(v.z);
 	}
-	//Yaw, Pitch, Roll (YXZ)
 	//Yaw, Pitch, Roll (YXZ)
 	static M4 rotationYXZ(V3 v) {
 		return (rotationZ(v.z) * rotationX(v.x)) * rotationY(v.y);
@@ -336,7 +337,7 @@ struct alignas(64) M4 {
 		return os << m.i << ", " << m.j << ", " << m.k << ", " << m.l;
 	}
 };
-u8 randomU8(u8 r) {
+ce u8 randomU8(u8 r) {
 	r += 0x0C;
 	r *= 0x61;
 	r ^= 0xB2;
@@ -345,30 +346,30 @@ u8 randomU8(u8 r) {
 	r *= 0xA7;
 	return (r << 4) | (r >> 4);
 }
-u32 randomU32(u32 r) {
+ce u32 randomU32(u32 r) {
 	r += 0x0C252DA0;
 	r *= 0x55555561;
 	r ^= 0xB23E2387;
 	r -= 0x8069BAC0;
 	r ^= 0xF5605798;
 	r *= 0xAAAAAABF;
-	return _rotl(r, 16);
+	return (r << 16) | (r >> 16);
 }
-u32 randomU32(i32 in) {
+ce u32 randomU32(i32 in) {
 	return randomU32((u32)in);
 }
-u32 randomU32(V2i in) {
+ce u32 randomU32(V2i in) {
 	auto x = randomU32(in.x);
 	auto y = randomU32(in.y);
 	return x ^ y;
 }
-u32 randomU32(V3i in) {
+ce u32 randomU32(V3i in) {
 	auto x = randomU32(in.x);
 	auto y = randomU32(in.y);
 	auto z = randomU32(in.z);
 	return x + y + z;
 }
-u64 randomU64(V3i in) {
+ce u64 randomU64(V3i in) {
 	auto x = randomU32(in.x);
 	auto y = randomU32(in.y);
 	auto z = randomU32(in.z);
@@ -377,13 +378,6 @@ u64 randomU64(V3i in) {
 		(u64)z | ((u64)x << 32) +
 		(u64)y | ((u64)z << 32);
 }
-#ifdef _M_AMD64
-#define randomSize(x) randomU64(x)
-#elif defined(_M_IX86)
-#define randomSize(x) randomU32(x)
-#else
-#error Unknown architecture
-#endif
 namespace std {
 template<>
 struct hash<V3> {
@@ -404,26 +398,32 @@ struct hash<V3i> {
 	}
 };
 }
-f32 frac(f32 x) {
+#define round _round
+ce i32 round(f32 v) {
+	if (v < 0)
+		return int(v - .5f);
+	return int(v + .5f);
+}
+ce f32 frac(f32 x) {
 	auto r = x - (i64)x;
 	if (r < 0)
 		++r;
 	return r;
 }
-V2 frac(V2 v) {
+ce V2 frac(V2 v) {
 	return {
 		frac(v.x),
 		frac(v.y),
 	};
 }
-V3 frac(V3 v) {
+ce V3 frac(V3 v) {
 	return {
 		frac(v.x),
 		frac(v.y),
 		frac(v.z),
 	};
 }
-V4 frac(V4 v) {
+ce V4 frac(V4 v) {
 	return {
 		frac(v.x),
 		frac(v.y),
@@ -431,25 +431,25 @@ V4 frac(V4 v) {
 		frac(v.w),
 	};
 }
-i32 frac(i32 v, i32 s) {
+ce i32 frac(i32 v, i32 s) {
 	if (v < 0)
 		return (v + 1) % s + s - 1;
 	return v % s;
 }
-V2i frac(V2i v, i32 s) {
+ce V2i frac(V2i v, i32 s) {
 	return {
 		frac(v.x, s),
 		frac(v.y, s),
 	};
 }
-V3i frac(V3i v, i32 s) {
+ce V3i frac(V3i v, i32 s) {
 	return {
 		frac(v.x, s),
 		frac(v.y, s),
 		frac(v.z, s),
 	};
 }
-V4i frac(V4i v, i32 s) {
+ce V4i frac(V4i v, i32 s) {
 	return {
 		frac(v.x, s),
 		frac(v.y, s),
@@ -457,20 +457,20 @@ V4i frac(V4i v, i32 s) {
 		frac(v.w, s),
 	};
 }
-V2 floor(V2 v) {
+ce V2 floor(V2 v) {
 	return {
 		floorf(v.x),
 		floorf(v.y),
 	};
 }
-V3 floor(V3 v) {
+ce V3 floor(V3 v) {
 	return {
 		floorf(v.x),
 		floorf(v.y),
 		floorf(v.z),
 	};
 }
-V4 floor(V4 v) {
+ce V4 floor(V4 v) {
 	return {
 		floorf(v.x),
 		floorf(v.y),
@@ -478,25 +478,25 @@ V4 floor(V4 v) {
 		floorf(v.w),
 	};
 }
-i32 floor(i32 v, i32 s) {
+ce i32 floor(i32 v, i32 s) {
 	if (v < 0)
 		return (v + 1) / s - 1;
 	return v / s;
 }
-V2i floor(V2i v, i32 step) {
+ce V2i floor(V2i v, i32 step) {
 	return {
 		floor(v.x, step),
 		floor(v.y, step),
 	};
 }
-V3i floor(V3i v, i32 step) {
+ce V3i floor(V3i v, i32 step) {
 	return {
 		floor(v.x, step),
 		floor(v.y, step),
 		floor(v.z, step),
 	};
 }
-V4i floor(V4i v, i32 step) {
+ce V4i floor(V4i v, i32 step) {
 	return {
 		floor(v.x, step),
 		floor(v.y, step),
@@ -504,29 +504,25 @@ V4i floor(V4i v, i32 step) {
 		floor(v.w, step),
 	};
 }
-f32 dot(V2 a, V2 b) { return a.dot(b); }
-f32 dot(V3 a, V3 b) { return a.dot(b); }
-f32 dot(V4 a, V4 b) { return a.dot(b); }
-f32 distanceSqr(V2 a, V2 b) { return (a - b).lengthSqr(); }
-f32 distanceSqr(V3 a, V3 b) { return (a - b).lengthSqr(); }
-f32 distanceSqr(V4 a, V4 b) { return (a - b).lengthSqr(); }
+ce f32 dot(V2 a, V2 b) { return a.dot(b); }
+ce f32 dot(V3 a, V3 b) { return a.dot(b); }
+ce f32 dot(V4 a, V4 b) { return a.dot(b); }
+ce f32 distanceSqr(V2 a, V2 b) { return (a - b).lengthSqr(); }
+ce f32 distanceSqr(V3 a, V3 b) { return (a - b).lengthSqr(); }
+ce f32 distanceSqr(V4 a, V4 b) { return (a - b).lengthSqr(); }
 f32 distance(V2 a, V2 b) { return sqrt(distanceSqr(a, b)); }
 f32 distance(V3 a, V3 b) { return sqrt(distanceSqr(a, b)); }
 f32 distance(V4 a, V4 b) { return sqrt(distanceSqr(a, b)); }
-template<class T>
-T min(T a, T b) {
-	return a < b ? a : b;
+int maxDistance(V3i a, V3i b) {
+	a = (a - b).absolute();
+	return max(max(a.x, a.y), a.z);
 }
 template<class T>
-T max(T a, T b) {
-	return a > b ? a : b;
-}
-template<class T>
-T clamp(T a, T mi, T ma) {
+ce T clamp(T a, T mi, T ma) {
 	return min(max(a, mi), ma);
 }
 template<class T>
-T lerp(T a, T b, f32 t) {
+ce T lerp(T a, T b, f32 t) {
 	return a + (b - a) * t;
 }
 f32 coserp(f32 a, f32 b, f32 t) {
@@ -534,57 +530,49 @@ f32 coserp(f32 a, f32 b, f32 t) {
 	auto f = (1 - cosf(ft)) * 0.5f;
 	return a * (1 - f) + b * f;
 }
-f32 noise(i32 x) {
+ce f32 noise(i32 x) {
 	x = (x << 13) ^ x;
 	return (1.0f - ((x * (x * x * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f);
 }
-f32 noise(i32 x, i32 y) {
-	auto n = x + y * 57;
+ce f32 noise(V2i v) {
+	auto n = v.x + v.y * 57;
 	n = (n << 13) ^ n;
 	return (1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7FFFFFFF) / 2147483648.0f);
 }
 f32 cosNoise(f32 v) {
 	auto fl = (i32)floor(v);
-	auto l = noise(fl);
-	auto r = noise(fl + 1);
-	return coserp(l, r, frac(v));
+	return coserp(noise(fl),
+				  noise(fl + 1),
+				  frac(v));
 }
-f32 cosNoise(V2 p) {
+template<class Interp, class Sample>
+f32 interpolate(V2 p, Interp&& interp, Sample&& sample) {
 	auto x = (i32)floor(p.x);
 	auto y = (i32)floor(p.y);
-	auto bl = noise(x, y);
-	auto tl = noise(x, y + 1);
-	auto br = noise(x + 1, y);
-	auto tr = noise(x + 1, y + 1);
 	auto fr = frac(p.x);
-	auto b = coserp(bl, br, fr);
-	auto t = coserp(tl, tr, fr);
-	return coserp(b, t, frac(p.y));
+	return interp(interp(sample(x, y),     sample(x + 1, y),     fr),
+				  interp(sample(x, y + 1), sample(x + 1, y + 1), fr),
+				  frac(p.y));
 }
-f32 perlin(V2 v, u32 o) {
-	f32 result = 0.0f;
-	f32 div = 0.0f;
-	f32 vmul = 1.0f;
-	f32 pmul = 1.0f;
-	for (u32 i = 0; i < o; ++i) {
-		result += cosNoise(v * pmul) * vmul;
-		div += vmul;
-		vmul *= 0.5f;
-		pmul *= 2.0f;
-	}
-	return result / div;
+template<class Interp, class Sample>
+f32 interpolate(V2i p, i32 s, Interp&& interp, Sample&& sample) {
+	auto fl = floor(p, s);
+	auto fr = frac(p.x, s) / f32(s);
+	return interp(interp(sample(fl+V2i{0,0}), sample(fl+V2i{1,0}), fr),
+				  interp(sample(fl+V2i{0,1}), sample(fl+V2i{1,1}), fr),
+				  frac(p.y, s) / f32(s));
 }
-V2 random01(V2 p) {
+ce V2 random01(V2 p) {
 	V2 a = frac((p + ROOT2) * V2 { PI, PI * 2 });
 	a += dot(a, a + PI * 4);
 	return frac(V2 {a.x * a.y, a.x + a.y});
 }
-V3 random01(V3 p) {
+ce V3 random01(V3 p) {
 	V3 a = frac((p + ROOT2) * V3 { PI, PI * 2, PI * 3 });
 	a += dot(a, a + PI * 4);
 	return frac(V3 {a.x * a.y, a.y * a.z, a.x * a.z});
 }
-V2 random01(V2i v) {
+ce V2 random01(V2i v) {
 	auto x = randomU32(v);
 	auto y = randomU32(v + 2454940283);
 	return V2 {x / 256, y/256} / 16777215.f;
@@ -674,9 +662,9 @@ f32 voronoiCrackle(V2 v) {
 	}
 	return sqrt(max(max(closestPoi32s[0], closestPoi32s[1]), closestPoi32s[2])) * (1 / ROOT2);
 }
-template<class Seed, class FnRet>
-FnRet textureDetail(u32 octaves, f32 persistence, FnRet (&& fn)(Seed), Seed seed) {
-	FnRet result {};
+template<class Fn>
+auto textureDetail(u32 octaves, f32 persistence, V2 seed, Fn&& fn) {
+	decltype(fn(seed)) result {};
 	f32 vmul = 1.0f;
 	f32 pmul = 1.0f;
 	f32 div = 0.0f;
@@ -688,14 +676,14 @@ FnRet textureDetail(u32 octaves, f32 persistence, FnRet (&& fn)(Seed), Seed seed
 	}
 	return result / div;
 }
-template<class Seed, class FnRet>
-FnRet textureDetail(u32 octaves, f32 persistence, FnRet (&& fn)(Seed, i32), Seed seed, i32 extra) {
-	FnRet result {};
+template<class Fn>
+auto textureDetail(u32 octaves, f32 persistence, V2i seed, i32 s, Fn&& fn) {
+	decltype(fn(seed, s)) result {};
 	f32 vmul = 1.0f;
 	i32 pmul = 1;
 	f32 div = 0.0f;
 	for (u32 i = 0; i < octaves; ++i) {
-		result += fn(seed * pmul + i * extra, extra) * vmul;
+		result += fn(seed * pmul + i * s, s) * vmul;
 		div += vmul;
 		vmul *= persistence;
 		pmul *= 2;
@@ -765,7 +753,7 @@ bool raycastBlock(V3 a, V3 b, V3 blk, Hit& hit, V3 blockDimensions) {
 	return true;
 }
 template<class T, size_t size>
-T linearSample(const T (&arr)[size], float t) {
+ce T linearSample(const T (&arr)[size], float t) ne {
 	f32 f = frac(t) * size;
 	i32 a = (i32)f;
 	i32 b = a + 1;
@@ -816,3 +804,55 @@ struct FrustumPlanes {
 		return true;
 	}
 };
+
+#if 1
+namespace {
+constexpr f32 test[4] {
+		0,1,2,3
+};
+static_assert(linearSample(test, 0) == 0);
+static_assert(linearSample(test, 0.125f) == 0.5f);
+static_assert(linearSample(test, 0.25f) == 1);
+static_assert(linearSample(test, 0.375f) == 1.5f);
+static_assert(linearSample(test, 0.5f) == 2);
+static_assert(linearSample(test, 0.625f) == 2.5);
+static_assert(linearSample(test, 0.75f) == 3);
+static_assert(linearSample(test, 0.875f) == 1.5f);
+static_assert(linearSample(test, 1) == 0);
+static_assert(frac(-6, 5) == 4);
+static_assert(frac(-5, 5) == 0);
+static_assert(frac(-4, 5) == 1);
+static_assert(frac(-3, 5) == 2);
+static_assert(frac(-2, 5) == 3);
+static_assert(frac(-1, 5) == 4);
+static_assert(frac(0, 5) == 0);
+static_assert(frac(1, 5) == 1);
+static_assert(frac(2, 5) == 2);
+static_assert(frac(3, 5) == 3);
+static_assert(frac(4, 5) == 4);
+static_assert(frac(5, 5) == 0);
+static_assert(frac(6, 5) == 1);
+static_assert(floor(-6, 3) == -2);
+static_assert(floor(-5, 3) == -2);
+static_assert(floor(-4, 3) == -2);
+static_assert(floor(-3, 3) == -1);
+static_assert(floor(-2, 3) == -1);
+static_assert(floor(-1, 3) == -1);
+static_assert(floor(0, 3) == 0);
+static_assert(floor(1, 3) == 0);
+static_assert(floor(2, 3) == 0);
+static_assert(floor(3, 3) == 1);
+static_assert(floor(4, 3) == 1);
+static_assert(floor(5, 3) == 1);
+static_assert(floor(6, 3) == 2);
+static_assert(round(-1) == -1);
+static_assert(round(-0.6) == -1);
+static_assert(round(-0.5) == -1);
+static_assert(round(-0.4) == 0);
+static_assert(round(0) == 0);
+static_assert(round(0.4) == 0);
+static_assert(round(0.5) == 1);
+static_assert(round(0.6) == 1);
+static_assert(round(1) == 1);
+}
+#endif
