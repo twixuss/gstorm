@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include <numeric>
 V3 r2w(V3 rel, V3i chunk) {
 	return rel + (V3)(chunk * CHUNK_WIDTH);
 }
@@ -50,25 +51,28 @@ struct Chunk {
 				b.free();
 			}
 		}
-	} meshBuffer;
-	VertexBuffer approxMesh;
+	};
+	enum class State {
+		unloaded,
+		loaded, 
+		buildingMesh, 
+		wantedToBeDeleted
+	};
+	MeshBuffer meshBuffer;
 	Blocks* blocks = 0;
 	D3D11& renderer;
 	const V3i position;
-	bool needToSave_ = false;
-	bool meshGenerated = false;
+	std::atomic<State> state {State::unloaded};
+	bool needToSave = false;
 	bool generated = false;
-	bool wantedToBeDeleted = false;
 	std::atomic_int userCount = 0;
-	std::mutex deleteMutex;
 	std::mutex bufferMutex;
+	HANDLE usageSemaphore;
 	Chunk(V3i position, D3D11& renderer) : position(position), renderer(renderer) {
+		usageSemaphore = CreateSemaphoreExA(0, 1, 1, 0, 0, SYNCHRONIZE);
 	}
 	~Chunk() {
 		assert(userCount == 0);
-	}
-	bool needToSave() {
-		return needToSave_;
 	}
 	void allocateBlocks(BlockArena& arena) {
 		if (!blocks) {
@@ -100,7 +104,7 @@ struct Chunk {
 	}
 	void save(FILE* saveFile, FilePos where) {
 		filePos = where;
-		needToSave_ = false;
+		needToSave = false;
 
 		assert(saveFile);
 		assert(filePos != FILEPOS_INVALID);
@@ -114,11 +118,10 @@ struct Chunk {
 		assert(x >= 0 && x < CHUNK_WIDTH);
 		assert(y >= 0 && y < CHUNK_WIDTH);
 		assert(z >= 0 && z < CHUNK_WIDTH);
+		needToSave = true;
 		auto& b = blocks->at(BLOCK_INDEX(x, y, z));
 		auto result = b != blk;
 		b = blk;
-		needToSave_ = true;
-		meshGenerated = false;
 		return result;
 	}
 	bool setBlock(V3i p, BlockID blk) {
@@ -161,7 +164,7 @@ struct Chunk {
 						if (y == top - 1) {
 							//b = BLOCK_TALL_GRASS;
 							b = textureDetail(2, 0.5f, globalPos, 8, [](V2i pos, i32 s) {
-								return interpolate(pos, s, coserp, [](V2i pos) {
+								return interpolate(pos, s, [](auto a, auto b, auto t) { return lerp(a,b,cos01(t)); }, [](V2i pos) {
 									return noise(pos);
 												   });
 											  }) > 0.5f ? BLOCK_TALL_GRASS : BLOCK_AIR;
@@ -172,82 +175,23 @@ struct Chunk {
 					}
 				}
 			}
-			//if (position.y < 2) {
-			//	FOREACH_BLOCK {
-			//		if (b == BLOCK_AIR || b == BLOCK_TALL_GRASS)
-			//			b = BLOCK_WATER;
-			//	}
-			//}
 			generateTime += WH::getPerformanceCounter() - beginCounter;
 			++generateCount;
 		}
 		generated = true;
-
-		if (0) //if (!saveSpaceOnDisk)
-			needToSave_ = true; // TODO: make option for saving space on disk
 	}
-	/*
-	void buildApproxMesh() {
-		u32 heights[4] {};
-		for (int y=0; y < CHUNK_WIDTH; ++y) { if()heights[0] = max(); }
-		struct Vertex {
-			V3 pos, nrm;
-			V2 uv;
-		};
-		int pos = blockInfos.at(BLOCK_GRASS).offsetAtlasPos(AXIS_PY);
-		V2i atlasPos {
-			pos % ATLAS_SIZE,
-			pos / ATLAS_SIZE,
-		};
-		V2 uvs[4] {
-			V2{atlasPos.x,  atlasPos.y} * ATLAS_ENTRY_SIZE,
-			V2{atlasPos.x + 1,atlasPos.y} * ATLAS_ENTRY_SIZE,
-			V2{atlasPos.x + 1,atlasPos.y + 1} * ATLAS_ENTRY_SIZE,
-			V2{atlasPos.x,  atlasPos.y + 1} * ATLAS_ENTRY_SIZE,
-		};
-		auto uvIdx = randomU32(position) % 4;
-		Vertex verts[4] {
-			{{0, (f32)heights[0], CHUNK_WIDTH}		    ,{0,1,0}, uvs[(uvIdx + 0) % 4]},
-			{{CHUNK_WIDTH, (f32)heights[1], CHUNK_WIDTH},{0,1,0}, uvs[(uvIdx + 1) % 4]},
-			{{0, (f32)heights[2], 0}					,{0,1,0}, uvs[(uvIdx + 3) % 4]},
-			{{CHUNK_WIDTH, (f32)heights[3], 0}		    ,{0,1,0}, uvs[(uvIdx + 2) % 4]},
-		};
-
-		Vertex vertices[6] {
-			verts[0],
-			verts[1],
-			verts[2],
-			verts[1],
-			verts[3],
-			verts[2],
-		}
-		approxMesh.free();
-		approxMesh.vertexCount = 6;
-
-		if (approxMesh.vertexCount) {
-			u32 vertexBufferSize = approxMesh.vertexCount * sizeof(vertices[0]);
-			approxMesh.vBuffer = renderer.createImmutableStructuredBuffer(vertexBufferSize, sizeof(vertices[0]), vertices);
-
-			D3D11_SHADER_RESOURCE_VIEW_DESC desc {};
-			desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-			desc.Buffer.NumElements = approxMesh.vertexCount;
-			DHR(renderer.device->CreateShaderResourceView(approxMesh.vBuffer, &desc, &approxMesh.vBufferView));
-		}
-	}
-	void drawApprox(ID3D11Buffer* drawCBuffer) {
-		renderer.deviceContext->VSSetShaderResources(0, 1, &approxMesh.vBufferView);
-		renderer.updateBuffer(drawCBuffer, drawData);
-		renderer.draw(approxMesh.vertexCount);
-	}
-	*/
 	void generateMesh(ChunkVertex* vertexPool, u32* indexPool, const Neighbors& neighbors) {
-		deleteMutex.lock();
-		if (wantedToBeDeleted) {
-			deleteMutex.unlock();
-			return;
+		{
+			State expectedState = State::loaded;
+			if (!state.compare_exchange_strong(expectedState, State::buildingMesh)) {
+				assert(expectedState == State::wantedToBeDeleted);
+				return;
+			}
 		}
-		deleteMutex.unlock();
-		//TIMED_FUNCTION;
+		DEFER {
+			State expectedState = State::buildingMesh;
+			assert(state.compare_exchange_strong(expectedState, State::loaded));
+		};
 		assert(blocks);
 		ChunkVertex* verticesBegin = vertexPool;
 		u32* indicesBegin = indexPool;
@@ -258,6 +202,16 @@ struct Chunk {
 		auto pushIndex = [&indexPool, indicesBegin](u32 idx) {
 			assert(indexPool - indicesBegin < maxChunkIndexCount && "small pool");
 			*indexPool++ = idx;
+		};
+		auto pushVertices = [&vertexPool, verticesBegin](const auto& list) {
+			assert((size_t)maxChunkVertexCount - (vertexPool - verticesBegin) >= std::size(list) && "small pool");
+			std::copy(std::begin(list), std::end(list), vertexPool);
+			vertexPool += std::size(list);
+		};
+		auto pushIndices = [&indexPool, indicesBegin](std::initializer_list<u32> list) {
+			assert((size_t)maxChunkIndexCount - (indexPool - indicesBegin) >= list.size() && "small pool");
+			std::copy(list.begin(), list.end(), indexPool);
+			indexPool += list.size();
 		};
 		u32 idx = 0;
 		auto beginCounter = WH::getPerformanceCounter();
@@ -366,7 +320,7 @@ struct Chunk {
 								assert(0);
 						}
 						int pos = blockInfo.offsetAtlasPos(axis);
-						V2i atlasPos {
+						V2i atlasPos = 2 * V2i {
 							pos % ATLAS_SIZE,
 							pos / ATLAS_SIZE,
 						};
@@ -380,33 +334,83 @@ struct Chunk {
 						verts[3].setUvRotation(uvIdx);
 						V2i uvs[4];
 						uvs[0] = {atlasPos.x,  atlasPos.y};
-						uvs[1] = {atlasPos.x + 1,atlasPos.y};
-						uvs[2] = {atlasPos.x + 1,atlasPos.y + 1};
-						uvs[3] = {atlasPos.x,  atlasPos.y + 1};
+						uvs[1] = {atlasPos.x + 2,atlasPos.y};
+						uvs[2] = {atlasPos.x + 2,atlasPos.y + 2};
+						uvs[3] = {atlasPos.x,  atlasPos.y + 2};
 						verts[0].setUv(uvs[(uvIdx + 0) % 4]);
 						verts[1].setUv(uvs[(uvIdx + 1) % 4]);
 						verts[2].setUv(uvs[(uvIdx + 3) % 4]);
 						verts[3].setUv(uvs[(uvIdx + 2) % 4]);
-						pushVertex(verts[0]);
-						pushVertex(verts[1]);
-						pushVertex(verts[2]);
-						pushVertex(verts[3]);
-						pushIndex(idx + 0);
-						pushIndex(idx + 1);
-						pushIndex(idx + 2);
-						pushIndex(idx + 1);
-						pushIndex(idx + 3);
-						pushIndex(idx + 2);
+						pushVertices(verts);
+						pushIndices({idx + 0,
+									 idx + 1,
+									 idx + 2,
+									 idx + 1,
+									 idx + 3,
+									 idx + 2});
 						idx += 4;
 					};
-					/*
-					if (visible[0] && !visible[1] && visible[2] && !visible[3] && !visible[4] && !visible[5]) {
-						u32 defData0 = makeVertexData0(0, 0, 0, 0);
+					int visibleCount = std::accumulate(std::begin(visible), std::end(visible), 0);
+					int visibleBits = (visible[0] << 5) | (visible[1] << 4) | (visible[2] << 3) | (visible[3] << 2) | (visible[4] << 1) | (visible[5] << 0);
+					if (visibleCount == 0) {
+						break;
+					}
+					else if (visibleCount == 1) {
+						calcVerts([&] { for (u8 i = 0; i < 6; ++i) if (visible[i]) return i; assert(0); }());
+						break;
+					}
+					else if (visibleCount == 6) {
+						ChunkVertex verts[6] {};
+						verts[0].normal = 0xFF808000;
+						verts[1].normal = 0x00808000;
+						verts[2].normal = 0x80FF8000;
+						verts[3].normal = 0x80008000;
+						verts[4].normal = 0x8080FF00;
+						verts[5].normal = 0x80800000;
+						verts[0].tangent = 0x8080FF00;
+						verts[1].tangent = 0x80800000;
+						verts[2].tangent = 0xFF808000;
+						verts[3].tangent = 0xFF808000;
+						verts[4].tangent = 0x00808000;
+						verts[5].tangent = 0xFF808000;
+						verts[0].position = V3 {V3i{x, y, z}} + V3{0.5,0,0};
+						verts[1].position = V3 {V3i{x, y, z}} + V3{-0.5,0,0};
+						verts[2].position = V3 {V3i{x, y, z}} + V3{0,0.5,0};
+						verts[3].position = V3 {V3i{x, y, z}} + V3{0,-0.5,0};
+						verts[4].position = V3 {V3i{x, y, z}} + V3{0,0,0.5};
+						verts[5].position = V3 {V3i{x, y, z}} + V3{0,0,-0.5};
+						pushVertices(verts);
+						pushIndices({idx + 2, idx + 4, idx + 0,
+									 idx + 2, idx + 1, idx + 4,
+									 idx + 2, idx + 5, idx + 1,
+									 idx + 2, idx + 0, idx + 5,
+									 idx + 3, idx + 0, idx + 4,
+									 idx + 3, idx + 4, idx + 1,
+									 idx + 3, idx + 1, idx + 5,
+									 idx + 3, idx + 5, idx + 0});
+
+						idx += 6;
+						break;
+					}
+					else if (0) {
 						ChunkVertex verts[4] {};
-						verts[0].data0 = defData0;
-						verts[1].data0 = defData0;
-						verts[2].data0 = defData0;
-						verts[3].data0 = defData0;
+						auto getNormal = [visibleBits]() {
+							switch (visibleBits) {
+								case 0b101000: return 0xFFFF8000u; //+x+y
+								case 0b100100: return 0xFF008000u; //+x-y
+								case 0b100010: return 0xFF80FF00u; //+x+z
+								case 0b100001: return 0xFF800000u; //+x-z
+								case 0b011000: return 0x00FF8000u; //-x+y
+								case 0b010100: return 0x00008000u; //-x-y
+								case 0b010010: return 0x0080FF00u; //-x+z
+								case 0b010001: return 0x00800000u; //-x-z
+								case 0b001010: return 0x80FFFF00u; //+y+z
+								case 0b001001: return 0x80FF0000u; //+y-z
+								case 0b000110: return 0x8000FF00u; //-y+z
+								case 0b000101: return 0x80000000u; //-y-z
+							}
+							assert(0);
+						};
 						verts[0].normal = 0xFFFF8000;
 						verts[1].normal = 0xFFFF8000;
 						verts[2].normal = 0xFFFF8000;
@@ -419,7 +423,54 @@ struct Chunk {
 						verts[1].position = V3 {V3i{x, y, z}} + cornerOffsets[5];
 						verts[2].position = V3 {V3i{x, y, z}} + cornerOffsets[2];
 						verts[3].position = V3 {V3i{x, y, z}} + cornerOffsets[4];
-						int pos = 0;
+						int pos = blockInfo.offsetAtlasPos(AXIS_PY);
+						V2i atlasPos = 2 * V2i {
+							pos % ATLAS_SIZE,
+							pos / ATLAS_SIZE,
+						};
+						u32 uvIdx = 0;
+						if (blockInfo.randomizeUv[0]) {
+							uvIdx = randomU32(r2w(V3i {x,y,z}, position)) % 4;
+						}
+						verts[0].setUvRotation(uvIdx);
+						verts[1].setUvRotation(uvIdx);
+						verts[2].setUvRotation(uvIdx);
+						verts[3].setUvRotation(uvIdx);
+						V2i uvs[4];
+						uvs[0] = {atlasPos.x,  atlasPos.y};
+						uvs[1] = {atlasPos.x + 2,atlasPos.y};
+						uvs[2] = {atlasPos.x + 2,atlasPos.y + 2};
+						uvs[3] = {atlasPos.x,  atlasPos.y + 2};
+						verts[0].setUv(uvs[(uvIdx + 0) % 4]);
+						verts[1].setUv(uvs[(uvIdx + 1) % 4]);
+						verts[2].setUv(uvs[(uvIdx + 3) % 4]);
+						verts[3].setUv(uvs[(uvIdx + 2) % 4]);
+						pushVertices(verts);
+						pushIndices({idx + 0,
+									 idx + 1,
+									 idx + 2,
+									 idx + 1,
+									 idx + 3,
+									 idx + 2});
+						idx += 4;
+						break;
+					}
+					/*
+					if (visible[0] && !visible[1] && visible[2] && !visible[3] && visible[4] && !visible[5]) {
+						ChunkVertex verts[6] {};
+						verts[0].normal = 0xFFFF8000;
+						verts[1].normal = 0xFFFFFF00;
+						verts[2].normal = 0xFFFFFF00;
+						verts[3].normal = 0x80FFFF00;
+						verts[0].tangent = 0x8080FF00;
+						verts[1].tangent = 0x00800000;
+						verts[2].tangent = 0x00800000;
+						verts[3].tangent = 0x00808000;
+						verts[0].position = V3 {V3i{x, y, z}} +cornerOffsets[3];
+						verts[1].position = V3 {V3i{x, y, z}} +cornerOffsets[5];
+						verts[2].position = V3 {V3i{x, y, z}} +cornerOffsets[2];
+						verts[3].position = V3 {V3i{x, y, z}} +cornerOffsets[6];
+						int pos = blockInfo.offsetAtlasPos(AXIS_PY);
 						V2i atlasPos {
 							pos % ATLAS_SIZE,
 							pos / ATLAS_SIZE,
@@ -465,15 +516,15 @@ struct Chunk {
 				}
 				case BlockInfo::Type::x: {
 					ChunkVertex verts[4] {};
-					V2i atlasPos {
+					V2i atlasPos = 2 * V2i {
 						 blockInfo.atlasPos % ATLAS_SIZE,
 						 blockInfo.atlasPos / ATLAS_SIZE,
 					};
 					V2i uvs[4];
 					uvs[0] = {atlasPos.x,  atlasPos.y};
-					uvs[1] = {atlasPos.x + 1,atlasPos.y};
-					uvs[2] = {atlasPos.x + 1,atlasPos.y + 1};
-					uvs[3] = {atlasPos.x,  atlasPos.y + 1};
+					uvs[1] = {atlasPos.x + 2,atlasPos.y};
+					uvs[2] = {atlasPos.x + 2,atlasPos.y + 2};
+					uvs[3] = {atlasPos.x,  atlasPos.y + 2};
 					auto randomizeUv = [&](u32 o) { // o is different for each face
 						if (randomU32(r2w(V3i {x,y,z} + o, position)) & 1) {
 							verts[0].setUv(uvs[0]);
@@ -613,7 +664,6 @@ struct Chunk {
 
 		buffer.vBufferView = renderer.createShaderResourceView(buffer.vBuffer, D3D11_SRV_DIMENSION_BUFFER, buffer.vertexCount);
 		buffer.iBufferView = renderer.createShaderResourceView(buffer.iBuffer, D3D11_SRV_DIMENSION_BUFFER, buffer.indexCount);
-		meshGenerated = true;
 		++meshesBuilt;
 	}
 	void draw(D3D11::ConstantBuffer<DrawCBuffer>& drawCBuffer, V3i playerChunk, const M4& matrixVP, const M4& matrixCamPos) {

@@ -46,6 +46,9 @@ struct V2 {
 	f32 length() const {
 		return sqrtf(lengthSqr());
 	}
+	V2 normalized() const {
+		return *this / length();
+	}
 	ce f32* data() { return &x; }
 	ce const f32* data() const { return &x; }
 	friend std::ostream& operator<<(std::ostream& os, V2 v) {
@@ -101,18 +104,25 @@ struct V3 {
 	}
 };
 struct alignas(16) V4 {
-	f32 x = 0;
-	f32 y = 0;
-	f32 z = 0;
-	f32 w = 0;
-	ce V4() = default;
+	union {
+		struct {
+			f32 x;
+			f32 y;
+			f32 z;
+			f32 w;
+		};
+		f32 v[4];
+		__m128 m;
+	};
+	ce V4() : v() {}
+	ce V4(__m128 m) : m(m) {}
 	ce V4(f32 x, f32 y, f32 z, f32 w) : x(x), y(y), z(z), w(w) {}
 	ce V4(f32 v) : V4(v, v, v, v) {}
 	ce explicit V4(V4i b);
-	ce V4 operator+(V4 b) const { return {x + b.x,y + b.y,z + b.z,w + b.w}; }
-	ce V4 operator-(V4 b) const { return {x - b.x,y - b.y,z - b.z,w - b.w}; }
-	ce V4 operator*(V4 b) const { return {x * b.x,y * b.y,z * b.z,w * b.w}; }
-	ce V4 operator/(V4 b) const { return {x / b.x,y / b.y,z / b.z,w / b.w}; }
+	ce V4 operator+(V4 b) const { return _mm_add_ps(m, b.m); }
+	ce V4 operator-(V4 b) const { return _mm_sub_ps(m, b.m); }
+	ce V4 operator*(V4 b) const { return _mm_mul_ps(m, b.m); }
+	ce V4 operator/(V4 b) const { return _mm_div_ps(m, b.m); }
 	ce V4& operator+=(V4 b) { *this = *this + b; return *this; }
 	ce V4& operator-=(V4 b) { *this = *this - b; return *this; }
 	ce V4& operator*=(V4 b) { *this = *this * b; return *this; }
@@ -120,21 +130,26 @@ struct alignas(16) V4 {
 	ce bool operator==(V4 b) const { return x == b.x && y == b.y && z == b.z && w == b.w; }
 	ce bool operator!=(V4 b) const { return !(*this == b); }
 	ce V4 operator-() {
-		return {-x,-y,-z,-w};
+		return _mm_sub_ps(_mm_set_ps1(0), m);
 	}
 	ce f32* data() { return &x; }
 	ce const f32* data() const { return &x; }
 	friend std::ostream& operator<<(std::ostream & os, V4 v) {
 		return os << v.x << ", " << v.y << ", " << v.z << ", " << v.w;
 	}
-	ce f32 dot(V4 b) const {
-		return x * b.x + y * b.y + z * b.z + w * b.w;
+	f32 dot(V4 b) const {
+		f32 result;
+		_mm_store_ss(&result, _mm_dp_ps(m, b.m, 0xFF));
+		return result;
 	}
-	ce f32 lengthSqr() const {
+	f32 lengthSqr() const {
 		return dot(*this);
 	}
 	f32 length() const {
 		return sqrtf(lengthSqr());
+	}
+	ce V3 xyz() const ne {
+		return {x,y,z};
 	}
 };
 struct V2i {
@@ -149,6 +164,11 @@ struct V2i {
 	ce V2i operator*(V2i b) const { return {x * b.x,y * b.y}; }
 	ce V2i operator/(V2i b) const { return {x / b.x,y / b.y}; }
 	ce V2i operator%(V2i b) const { return {x % b.x,y % b.y}; }
+	ce friend V2i operator+(i32 a, V2i b) { return {a + b.x,a + b.y}; }
+	ce friend V2i operator-(i32 a, V2i b) { return {a - b.x,a - b.y}; }
+	ce friend V2i operator*(i32 a, V2i b) { return {a * b.x,a * b.y}; }
+	ce friend V2i operator/(i32 a, V2i b) { return {a / b.x,a / b.y}; }
+	ce friend V2i operator%(i32 a, V2i b) { return {a % b.x,a % b.y}; }
 	ce V2i& operator+=(V2i b) { *this = *this + b; return *this; }
 	ce V2i& operator-=(V2i b) { *this = *this - b; return *this; }
 	ce V2i& operator*=(V2i b) { *this = *this * b; return *this; }
@@ -231,33 +251,35 @@ struct alignas(64) M4 {
 		struct {
 			V4 i, j, k, l;
 		};
-		f32 m[16];
+		f32 v[16];
+		__m128 m[4];
 	};
-	M4() : m() {}
-	M4(V4 i, V4 j, V4 k, V4 l) : i(i), j(j), k(k), l(l) {}
-	M4(f32 ix, f32 iy, f32 iz, f32 iw,
-	   f32 jx, f32 jy, f32 jz, f32 jw,
-	   f32 kx, f32 ky, f32 kz, f32 kw,
-	   f32 lx, f32 ly, f32 lz, f32 lw) :
+	ce M4() : v() {}
+	ce M4(V4 i, V4 j, V4 k, V4 l) : i(i), j(j), k(k), l(l) {}
+	ce M4(f32 ix, f32 iy, f32 iz, f32 iw,
+	      f32 jx, f32 jy, f32 jz, f32 jw,
+	      f32 kx, f32 ky, f32 kz, f32 kw,
+	      f32 lx, f32 ly, f32 lz, f32 lw) :
 		i(ix, iy, iz, iw),
 		j(jx, jy, jz, jw),
 		k(kx, ky, kz, kw),
 		l(lx, ly, lz, lw) {
 	}
 	V4 operator*(V4 b) const {
-		return {
-			i.x * b.x + j.x * b.y + k.x * b.z + l.x * b.w,
-			i.y * b.x + j.y * b.y + k.y * b.z + l.y * b.w,
-			i.z * b.x + j.z * b.y + k.z * b.z + l.z * b.w,
-			i.w * b.x + j.w * b.y + k.w * b.z + l.w * b.w,
-		};
+		__m128 x = _mm_mul_ps(_mm_set_ps1(b.x), m[0]);
+		__m128 y = _mm_mul_ps(_mm_set_ps1(b.y), m[1]);
+		__m128 z = _mm_mul_ps(_mm_set_ps1(b.z), m[2]);
+		__m128 w = _mm_mul_ps(_mm_set_ps1(b.w), m[3]);
+		return _mm_add_ps(_mm_add_ps(x, y), _mm_add_ps(z, w));
 	}
 	V3 operator*(V3 b) const {
-		return {
-			i.x * b.x + j.x * b.y + k.x * b.z,
-			i.y * b.x + j.y * b.y + k.y * b.z,
-			i.z * b.x + j.z * b.y + k.z * b.z,
-		};
+		__m128 x = _mm_mul_ps(_mm_set_ps1(b.x), m[0]);
+		__m128 y = _mm_mul_ps(_mm_set_ps1(b.y), m[1]);
+		__m128 z = _mm_mul_ps(_mm_set_ps1(b.z), m[2]);
+		__m128 r = _mm_add_ps(x, _mm_add_ps(y, z));
+		V3 result;
+		memcpy(&result, &r, 12);
+		return result;
 	}
 	M4 operator*(M4 b) const {
 		return {
@@ -267,10 +289,7 @@ struct alignas(64) M4 {
 			*this * b.l
 		};
 	}
-	M4& operator*=(M4 b) {
-		*this = *this * b;
-		return *this;
-	}
+	M4& operator*=(M4 b) { return *this = *this * b; }
 	static M4 scaling(V3 v) {
 		return {
 			v.x, 0, 0, 0,
@@ -506,10 +525,10 @@ ce V4i floor(V4i v, i32 step) {
 }
 ce f32 dot(V2 a, V2 b) { return a.dot(b); }
 ce f32 dot(V3 a, V3 b) { return a.dot(b); }
-ce f32 dot(V4 a, V4 b) { return a.dot(b); }
+f32 dot(V4 a, V4 b) { return a.dot(b); }
 ce f32 distanceSqr(V2 a, V2 b) { return (a - b).lengthSqr(); }
 ce f32 distanceSqr(V3 a, V3 b) { return (a - b).lengthSqr(); }
-ce f32 distanceSqr(V4 a, V4 b) { return (a - b).lengthSqr(); }
+f32 distanceSqr(V4 a, V4 b) { return (a - b).lengthSqr(); }
 f32 distance(V2 a, V2 b) { return sqrt(distanceSqr(a, b)); }
 f32 distance(V3 a, V3 b) { return sqrt(distanceSqr(a, b)); }
 f32 distance(V4 a, V4 b) { return sqrt(distanceSqr(a, b)); }
@@ -525,10 +544,8 @@ template<class T>
 ce T lerp(T a, T b, f32 t) {
 	return a + (b - a) * t;
 }
-f32 coserp(f32 a, f32 b, f32 t) {
-	auto ft = t * PI;
-	auto f = (1 - cosf(ft)) * 0.5f;
-	return a * (1 - f) + b * f;
+f32 cos01(f32 t) {
+	return 0.5f - cosf(t * PI) * 0.5f;
 }
 ce f32 noise(i32 x) {
 	x = (x << 13) ^ x;
@@ -541,9 +558,9 @@ ce f32 noise(V2i v) {
 }
 f32 cosNoise(f32 v) {
 	auto fl = (i32)floor(v);
-	return coserp(noise(fl),
-				  noise(fl + 1),
-				  frac(v));
+	return lerp(noise(fl),
+				noise(fl + 1),
+				cos01(frac(v)));
 }
 template<class Interp, class Sample>
 f32 interpolate(V2 p, Interp&& interp, Sample&& sample) {
@@ -763,7 +780,7 @@ ce T linearSample(const T (&arr)[size], float t) ne {
 }
 struct FrustumPlanes {
 	V4 planes[6];
-	FrustumPlanes(const M4& vp) ne {
+	ce FrustumPlanes(const M4& vp) ne {
 		planes[0].x = vp.i.w + vp.i.x;
 		planes[0].y = vp.j.w + vp.j.x;
 		planes[0].z = vp.k.w + vp.k.x;
@@ -788,8 +805,6 @@ struct FrustumPlanes {
 		planes[4].y = vp.j.z;
 		planes[4].z = vp.k.z;
 		planes[4].w = vp.l.z;
-	}
-	ce void normalize()& ne {
 		for (auto& p : planes) {
 			auto length = V3 {p.x, p.y, p.z}.length();
 			p /= length;

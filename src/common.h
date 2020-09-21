@@ -173,14 +173,15 @@ struct Arena {
 			}
 			return 0;
 		}
-		bool free(T* c) {
-			if (c < (T*)data || c >= (T*)data + blockCapacity)
-				return false;
-			c->~T();
-			size_t idx = c - (T*)data;
+		bool owns(T* t) {
+			return t >= (T*)data && t < (T*)data + blockCapacity;
+		}
+		void free(T* t) {
+			assert(owns(t));
+			t->~T();
+			size_t idx = t - (T*)data;
 			assert(occupied[idx]);
 			occupied[idx] = false;
-			return true;
 		}
 	};
 	Arena() {
@@ -189,6 +190,9 @@ struct Arena {
 	}
 	template<class... Args>
 	Ptr allocate(Args&&... args) {
+#ifndef BUILD_RELEASE
+		++occupiedCount;
+#endif
 		Block* curr = first;
 		void* result = 0;
 		size_t index = 0;
@@ -207,8 +211,10 @@ struct Arena {
 	void free(T* ptr) {
 		Block* curr = first;
 		while (curr) {
-			if (curr->free(ptr))
+			if (curr->owns(ptr)) {
+				free(curr, ptr);
 				return;
+			}
 			curr = curr->next;
 		}
 		assert(!"Bad free param");
@@ -220,7 +226,7 @@ struct Arena {
 			curr = curr->next;
 			assert(curr);
 		}
-		assert(curr->free(*(T*)(curr->data + idx)));
+		free(curr, *(T*)(curr->data + idx));
 	}
 	T& operator[](size_t idx) {
 		Block* curr = first;
@@ -243,6 +249,9 @@ struct Arena {
 			curr = curr->next;
 		}
 	}
+#ifndef BUILD_RELEASE
+	size_t occupiedCount = 0;
+#endif
 private:
 	Block* first = 0;
 	Block* last = 0;
@@ -251,6 +260,12 @@ private:
 		last->next = newBlock;
 		last = newBlock;
 		return newBlock;
+	}
+	void free(Block* block, T* ptr) {
+#ifndef BUILD_RELEASE
+		--occupiedCount;
+#endif
+		block->free(ptr);
 	}
 };
 

@@ -4,13 +4,13 @@
 #define ATLAS_SIZE 32
 #define ATLAS_ENTRY_SIZE (1.0f/ATLAS_SIZE)
 
-#define uvXOffset        10
+#define uvXOffset        11
 #define uvYOffset        4
 #define uvFlipOffset     2
 #define uvRotationOffset 0
 
-#define uvXMask        0x3F
-#define uvYMask        0x3F
+#define uvXMask        0x7F
+#define uvYMask        0x7F
 #define uvFlipMask     0x3
 #define uvRotationMask 0x3
 
@@ -34,8 +34,8 @@ u32 makeVertexData0(int u, int v, int uf, int ur) {
 struct ChunkVertex {
 	// used 16 bits
 	// free 16 bits
-	// uv X        - 6 bit 10
-	// uv Y        - 6 bit 4
+	// uv X        - 7 bit 11
+	// uv Y        - 7 bit 4
 	// uv flip     - 2 bit 2
 	// uv rotation - 2 bit 0
 	u32 data0 DEFINIT;
@@ -55,7 +55,7 @@ struct ChunkVertex {
 		return *this;
 	}
 	auto& setUv(V2i uv) {
-		setBits0((uv.x << 6) | uv.y, (uvXMask << 6) | uvYMask, uvYOffset);
+		setBits0((uv.x << 7) | uv.y, (uvXMask << 7) | uvYMask, uvYOffset);
 		return *this;
 	}
 #endif
@@ -97,8 +97,8 @@ void getNormal(ChunkVertex v, out float3 normal, out float3 tangent, out float3 
 }
 float2 getUv(ChunkVertex v, out float2x2 rot, out float2 flip) {
 	float2 uv;
-	uv.x = ((v.data0 >> uvXOffset) & uvXMask) * ATLAS_ENTRY_SIZE;
-	uv.y = ((v.data0 >> uvYOffset) & uvYMask) * ATLAS_ENTRY_SIZE;
+	uv.x = ((v.data0 >> uvXOffset) & uvXMask) * ATLAS_ENTRY_SIZE * 0.5f;
+	uv.y = ((v.data0 >> uvYOffset) & uvYMask) * ATLAS_ENTRY_SIZE * 0.5f;
 	rot = uvRots[(v.data0 >> uvRotationOffset) & uvRotationMask];
 	flip = uvFlips[(v.data0 >> uvFlipOffset) & uvFlipMask];
 	return uv;

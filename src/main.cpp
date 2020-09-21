@@ -11,7 +11,6 @@
 #include "math.cpp"
 #include "winhelper.h"
 #include "d3d11helper.h"
-#include "d3d12helper.h"
 
 #include <array>
 #include <fstream>
@@ -196,17 +195,17 @@ struct Input {
 	InputState current;
 	InputState previous;
 	void swap() {
-		memcpy(&previous, &current, sizeof(current));
+		previous = current;
 		current.mouseDelta = {};
 	}
-	bool keyHeld(u8 k) { return current.keys[k]; }
-	bool keyDown(u8 k) { return current.keys[k] && !previous.keys[k]; }
-	bool keyUp(u8 k) { return !current.keys[k] && previous.keys[k]; }
-	bool mouseHeld(u8 k) { return current.mouse[k]; }
-	bool mouseDown(u8 k) { return current.mouse[k] && !previous.mouse[k]; }
-	bool mouseUp(u8 k) { return !current.mouse[k] && previous.mouse[k]; }
-	auto mousePosition() { return current.mousePosition; }
-	auto mouseDelta() { return current.mouseDelta; }
+	nd bool keyHeld(u8 k) { return current.keys[k]; }
+	nd bool keyDown(u8 k) { return current.keys[k] && !previous.keys[k]; }
+	nd bool keyUp(u8 k) { return !current.keys[k] && previous.keys[k]; }
+	nd bool mouseHeld(u8 k) { return current.mouse[k]; }
+	nd bool mouseDown(u8 k) { return current.mouse[k] && !previous.mouse[k]; }
+	nd bool mouseUp(u8 k) { return !current.mouse[k] && previous.mouse[k]; }
+	nd auto mousePosition() { return current.mousePosition; }
+	nd auto mouseDelta() { return current.mouseDelta; }
 };
 struct Window {
 	HWND hwnd = 0;
@@ -232,7 +231,7 @@ struct ConcurrentQueue {
 		return buffer.front();
 	}
 	template<class Callback>
-	void process(Callback&& callback) {
+	void pop_all(Callback&& callback) {
 		if (!buffer.size())
 			return;
 		mutex.lock();
@@ -308,7 +307,7 @@ struct BlockInfo {
 	i16 atlasAxisOffsets[6] {};
 	Type type {};
 	bool randomizeUv[6] {};
-	i16 offsetAtlasPos(u8 axis) {
+	nd i16 offsetAtlasPos(u8 axis) {
 		return atlasPos + atlasAxisOffsets[axis];
 	}
 };
@@ -499,7 +498,7 @@ struct World {
 		}
 	}
 	void saveAndDelete(Chunk* c) {
-		if (c->needToSave()) {
+		if (c->needToSave) {
 			auto& filePos = c->filePos;
 			if (filePos == FILEPOS_INVALID)
 				filePos = saveFile.add(saveFileHandle, c->position);
@@ -542,37 +541,39 @@ struct World {
 		return neighbors;
 	}
 	// chunk loader thread
-	void wantToDelete(Chunk* c) {
-		if (!c->wantedToBeDeleted) {
-			c->wantedToBeDeleted = true;
-			assert_dbg(!contains(chunksWantedToDelete, c)); // BUG
-			chunksWantedToDelete.push_back(c);
-		}
-	}
-	// chunk loader thread
 	void buildMesh(Chunk* c) {
 		auto neighbors = getNeighbors(c);
 		for (auto n : neighbors)
 			if (!n)
 				return;
-		for (auto n : neighbors)
+		for (auto n : neighbors) {
 			++n->userCount;
+		}
 		++c->userCount;
 		meshQueue.push({c, neighbors});
 	}
+	bool wantToDelete(Chunk* c) {
+		Chunk::State expectedState = Chunk::State::loaded;
+		if (c->state.compare_exchange_strong(expectedState, Chunk::State::wantedToBeDeleted)) {
+			assert(!contains(chunksWantedToDelete, c));
+			chunksWantedToDelete.push_back(c);
+			return true;
+		}
+		return false;
+	}
 	bool loadChunks() {
-		loadQueue.process([this](Chunk* c) {
+		loadQueue.pop_all([this](Chunk* c) {
+			if (stopWork)
+				return;
+
 			DEFER {
 				--c->userCount;
 			};
-			if (maxDistance(playerChunk, c->position) > loadDistance) {
+
+			if (maxDistance(c->position, playerChunk) > loadDistance) {
+				wantToDelete(c);
 				return;
 			}
-			else {
-				c->wantedToBeDeleted = false;
-			}
-			if (stopWork)
-				return;
 
 			auto tryLoad = [&]() {
 				auto filePos = saveFile.find(saveFileHandle, c->position);
@@ -585,6 +586,8 @@ struct World {
 			if (!saveFileHandle || !tryLoad()) {
 				c->generate(blockArena);
 			}
+			Chunk::State expectedState = Chunk::State::unloaded;
+			assert(c->state.compare_exchange_strong(expectedState, Chunk::State::loaded));
 			buildMesh(c);
 			for (auto& n : getNeighbors(c)) {
 				if (n) {
@@ -592,40 +595,30 @@ struct World {
 				}
 			}
 		});
-		std::this_thread::sleep_for(std::chrono::milliseconds {1});
+		std::this_thread::sleep_for(std::chrono::milliseconds {1}); // TODO: Semaphore
 		return !stopWork;
 	}
 	void unloadChunks() {
-		unloadQueue.process([this](Chunk* c) {
+		unloadQueue.pop_all([this](Chunk* c) {
 			wantToDelete(c);
 		});
 
-		static std::vector<Chunk*> chunksToDelete;
-		static std::vector<Chunk*> chunksNotToDelete;
-		chunksToDelete.clear();
-		chunksNotToDelete.clear();
 		for (auto& c : chunksWantedToDelete) {
-			if (!c->wantedToBeDeleted)
-				continue;
-			c->deleteMutex.lock();
-			auto canDelete = c->userCount == 0;
-			c->deleteMutex.unlock();
-			if(canDelete)
-				chunksToDelete.push_back(c);
-			else
-				chunksNotToDelete.push_back(c);
+			assert(c->state == Chunk::State::wantedToBeDeleted);
+			//assert(c->userCount == 0);
+			if (c->userCount == 0) {
+				c->workEnded.wait();
+				saveAndDelete(c);
+			}
 		}
-		chunksWantedToDelete = std::move(chunksNotToDelete);
-		for (auto& c : chunksToDelete) {
-			saveAndDelete(c);
-		}
+		chunksWantedToDelete.clear();
 	}
 	bool updateChunks() {
 		unloadChunks();
 		return loadChunks();
 	}
 	bool buildMeshes() {
-		meshQueue.process([this](std::pair<Chunk*, Neighbors> pair) {
+		meshQueue.pop_all([this](std::pair<Chunk*, Neighbors> pair) {
 			if (stopWork)
 				return;
 			auto c = pair.first;
@@ -668,30 +661,26 @@ struct World {
 	bool setBlock(V3i worldPos, BlockID blk, bool immediate = false) {
 		auto chunkPos = chunkPosFromBlock(worldPos);
 		auto c = getChunk(chunkPos);
-		if (!c)
+		if (!c) {
 			return false;
+		}
 		auto relPos = frac(worldPos, CHUNK_WIDTH);
 		if (c->setBlock(relPos, blk)) {
 			auto updateMesh = [this, immediate](Chunk* chunk) {
 				if (immediate) {
 					chunk->generateMesh(vertexPools[1], indexPools[1], getNeighbors(chunk));
 				}
-				else
+				else {
 					buildMesh(chunk);
+				}
 			};
 			updateMesh(c);
-			auto onBoundary = [](V3i p) {
-				return
-					p.x == 0 || p.x == CHUNK_WIDTH - 1 ||
-					p.y == 0 || p.y == CHUNK_WIDTH - 1 ||
-					p.z == 0 || p.z == CHUNK_WIDTH - 1;
-			};
-			if (relPos.x == 0) if (auto n = getChunk(chunkPos + V3i {-1,0,0}); n)  updateMesh(n);
-			if (relPos.y == 0) if (auto n = getChunk(chunkPos + V3i {0,-1,0}); n)  updateMesh(n);
-			if (relPos.z == 0) if (auto n = getChunk(chunkPos + V3i {0,0,-1}); n)  updateMesh(n);
-			if (relPos.x == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {1,0,0}); n)  updateMesh(n);
-			if (relPos.y == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {0,1,0}); n)  updateMesh(n);
-			if (relPos.z == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {0,0,1}); n)  updateMesh(n);
+			if (relPos.x == 0) if (auto n = getChunk(chunkPos + V3i {-1,0,0}); n) updateMesh(n);
+			if (relPos.y == 0) if (auto n = getChunk(chunkPos + V3i {0,-1,0}); n) updateMesh(n);
+			if (relPos.z == 0) if (auto n = getChunk(chunkPos + V3i {0,0,-1}); n) updateMesh(n);
+			if (relPos.x == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {1,0,0}); n) updateMesh(n);
+			if (relPos.y == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {0,1,0}); n) updateMesh(n);
+			if (relPos.z == CHUNK_WIDTH - 1) if (auto n = getChunk(chunkPos + V3i {0,0,1}); n) updateMesh(n);
 			return true;
 		}
 		return false;
@@ -794,13 +783,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	//	}
 	//	return 1;
 	//}, 1);
-	const f32 maxSpeed = 15;
+	const f32 walkMaxSpeed = 15;
 	const f32 jumpForce = 250;
 	const f32 airMult = 0.2;
-	const f32 noclipMult = 16;
-	const f32 groundFriction = 1;
+	const f32 noclipMult = 4;
+	const f32 groundFriction = .5f;
 	const f32 airFriction = 0.2f;
-	const f32 noclipFriction = 1;
+	const f32 noclipFriction = .5;
 	const f32 noclipMaxSpeed = 50;
 	const f32 camHeight = 0.625f;
 
@@ -821,18 +810,18 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	int chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
 	int superSampleWidth = 1;
 
-	puts(R"(		Меню
-	1 - Начать
-	2 - Настроить)");
+	puts(R"(		пїЅпїЅпїЅпїЅ
+	1 - пїЅпїЅпїЅпїЅпїЅпїЅ
+	2 - пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ)");
 
 	char menuItem;
 	std::cin >> menuItem;
 	if (menuItem == '2') {
-		puts("Дистанция прорисовки (рекомендую от 2 до 8)");
+		puts("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ 2 пїЅпїЅ 8)");
 		std::cin >> chunkDrawDistance;
 		if (chunkDrawDistance <= 0) {
 			chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
-			puts("так низя. ставлю " STRINGIZE(DEFAULT_DRAW_DISTANCE));
+			puts("пїЅпїЅпїЅ пїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅ " STRINGIZE(DEFAULT_DRAW_DISTANCE));
 		}
 		MEMORYSTATUSEX memoryStatus {};
 		memoryStatus.dwLength = sizeof(MEMORYSTATUSEX);
@@ -842,14 +831,14 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		size_t memoryNeeded = x * x * x;
 		if (memoryNeeded > memoryStatus.ullTotalPhys) {
 			auto [value,unit] = normalizeBytes<double>(memoryNeeded);
-			printf("Не хватает памяти (%.3f %s необходимо). Ставлю " STRINGIZE(DEFAULT_DRAW_DISTANCE) "\n", value, unit);
+			printf("пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ (%.3f %s пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ). пїЅпїЅпїЅпїЅпїЅпїЅ " STRINGIZE(DEFAULT_DRAW_DISTANCE) "\n", value, unit);
 			chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
 		}
-		puts("Сглаживание [1,4]\n\t1 - Нет\n\t2 - 4x\n\t3 - 9x\n\t4 - 16x");
+		puts("пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ [1,4]\n\t1 - пїЅпїЅпїЅ\n\t2 - 4x\n\t3 - 9x\n\t4 - 16x");
 		std::cin >> superSampleWidth;
 		if (superSampleWidth < 1 || superSampleWidth > 4) {
 			superSampleWidth = 1;
-			puts("так низя. ставлю 1");
+			puts("пїЅпїЅпїЅ пїЅпїЅпїЅпїЅ. пїЅпїЅпїЅпїЅпїЅпїЅ 1");
 		}
 	}
 	int chunkLoadDistance = chunkDrawDistance + 1;
@@ -890,13 +879,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	D3D11 renderer(window.hwnd);
 	renderer.setPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-	FutureQueue<ID3D11ShaderResourceView*> textureFStack;
-	FutureQueue<ID3D11VertexShader*> vShaderFStack;
-	FutureQueue<ID3D11PixelShader*> pShaderFStack;
+	FutureQueue<ID3D11ShaderResourceView*> textureFQ;
+	FutureQueue<ID3D11VertexShader*> vShaderFQ;
+	FutureQueue<ID3D11PixelShader*> pShaderFQ;
 
-	textureFStack.push(renderer.loadTextureAsync(DATA "textures/atlas.png"));
-	textureFStack.push(renderer.loadTextureAsync(DATA "textures/atlas_normal.png"));
-	textureFStack.push(renderer.loadTextureAsync(DATA "textures/selection.png"));
+	textureFQ.push(renderer.loadTextureAsync(DATA "textures/atlas.png"));
+	textureFQ.push(renderer.loadTextureAsync(DATA "textures/atlas_normal.png"));
+	textureFQ.push(renderer.loadTextureAsync(DATA "textures/selection.png"));
 
 	ID3D11VertexShader* chunkVS;
 	ID3D11PixelShader* chunkPS;
@@ -914,15 +903,15 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	ID3D11PixelShader* blitPS;
 
 	auto compileShaders = [&]() {
-		vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/chunk.hlsl"));
-		vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/block.hlsl"));
-		vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/sky.hlsl"));
-		vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/sun.hlsl"));
+		vShaderFQ.push(renderer.createVertexShaderAsync(LDATA "shaders/chunk.hlsl"));
+		vShaderFQ.push(renderer.createVertexShaderAsync(LDATA "shaders/block.hlsl"));
+		vShaderFQ.push(renderer.createVertexShaderAsync(LDATA "shaders/sky.hlsl"));
+		vShaderFQ.push(renderer.createVertexShaderAsync(LDATA "shaders/sun.hlsl"));
 
-		pShaderFStack.push(renderer.createPixelShaderAsync(LDATA "shaders/chunk.hlsl"));
-		pShaderFStack.push(renderer.createPixelShaderAsync(LDATA "shaders/block.hlsl"));
-		pShaderFStack.push(renderer.createPixelShaderAsync(LDATA "shaders/sky.hlsl"));
-		pShaderFStack.push(renderer.createPixelShaderAsync(LDATA "shaders/sun.hlsl"));
+		pShaderFQ.push(renderer.createPixelShaderAsync(LDATA "shaders/chunk.hlsl"));
+		pShaderFQ.push(renderer.createPixelShaderAsync(LDATA "shaders/block.hlsl"));
+		pShaderFQ.push(renderer.createPixelShaderAsync(LDATA "shaders/sky.hlsl"));
+		pShaderFQ.push(renderer.createPixelShaderAsync(LDATA "shaders/sun.hlsl"));
 
 		{
 			char buf[2] {};
@@ -931,21 +920,21 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 				{"BLIT_SS", buf},
 				{}
 			};
-			vShaderFStack.push(renderer.createVertexShaderAsync(LDATA "shaders/blit.hlsl", defines));
-			pShaderFStack.push(renderer.createPixelShaderAsync (LDATA "shaders/blit.hlsl", defines));
+			vShaderFQ.push(renderer.createVertexShaderAsync(LDATA "shaders/blit.hlsl", defines));
+			pShaderFQ.push(renderer.createPixelShaderAsync (LDATA "shaders/blit.hlsl", defines));
 		}
-		chunkVS = vShaderFStack.pop();
-		blockVS = vShaderFStack.pop();
-		skyVS   = vShaderFStack.pop();
-		sunVS   = vShaderFStack.pop();
+		chunkVS = vShaderFQ.pop();
+		blockVS = vShaderFQ.pop();
+		skyVS   = vShaderFQ.pop();
+		sunVS   = vShaderFQ.pop();
 
-		chunkPS = pShaderFStack.pop();
-		blockPS = pShaderFStack.pop();
-		skyPS   = pShaderFStack.pop();
-		sunPS   = pShaderFStack.pop();
+		chunkPS = pShaderFQ.pop();
+		blockPS = pShaderFQ.pop();
+		skyPS   = pShaderFQ.pop();
+		sunPS   = pShaderFQ.pop();
 
-		blitVS  = vShaderFStack.pop();
-		blitPS  = pShaderFStack.pop();
+		blitVS  = vShaderFQ.pop();
+		blitPS  = pShaderFQ.pop();
 
 		puts("Shaders compiled");
 	};
@@ -963,9 +952,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	};
 	compileShaders();
 
-	ID3D11ShaderResourceView* atlasTex       = textureFStack.pop();
-	ID3D11ShaderResourceView* atlasNormalTex = textureFStack.pop();
-	ID3D11ShaderResourceView* selectionTex   = textureFStack.pop();
+	ID3D11ShaderResourceView* atlasTex       = textureFQ.pop();
+	ID3D11ShaderResourceView* atlasNormalTex = textureFQ.pop();
+	ID3D11ShaderResourceView* selectionTex   = textureFQ.pop();
 	puts("Textures loaded");
 
 	f32 farClipPlane = 1000;
@@ -1265,41 +1254,29 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			}
 		}
 
-		if (moveMode != MoveMode::walk)
-			accelMult *= (noclipMaxSpeed - playerVel.length()) / noclipMaxSpeed;
-		else
-			accelMult *= (maxSpeed - playerVel.xz().length()) / maxSpeed;
-
 		if (input.keyHeld(VK_SHIFT) || BOT)
 			accelMult *= 2;
 
-		acceleration += mov * targetFrameTime * accelMult * 2500;
-
+		auto maxSpeed = moveMode == MoveMode::walk ? walkMaxSpeed : noclipMaxSpeed;
+		playerVel += mov * accelMult * ((maxSpeed - dot(playerVel, mov)) / maxSpeed);
 		playerVel += acceleration * targetFrameTime * 2;
-		if (moveMode != MoveMode::walk) {
-			f32 l = playerVel.length();
-			if (l > 0) {
-				playerVel /= l;
-				l -= noclipFriction;
-				if (l < 0)
-					playerVel = 0;
-				else
-					playerVel *= l;
+
+		if (moveMode == MoveMode::walk) {
+			V2 v {playerVel.x, playerVel.z};
+			auto ls = v.lengthSqr();
+			if (ls > 0) {
+				auto l = sqrtf(ls);
+				v = (v / l) * max(l - (grounded ? groundFriction : airFriction), 0.f);
+				playerVel.x = v.x;
+				playerVel.z = v.y;
 			}
 		}
 		else {
-			V2 v = {playerVel.x, playerVel.z};
-			f32 l = v.length();
-			if (l > 0) {
-				v /= l;
-				l -= grounded ? groundFriction : airFriction;
-				if (l < 0)
-					v = 0;
-				else
-					v *= l;
+			auto ls = playerVel.lengthSqr();
+			if (ls > 0) {
+				auto l = sqrtf(ls);
+				playerVel = (playerVel / l) * max(l - groundFriction, 0.f);
 			}
-			playerVel.x = v.x;
-			playerVel.z = v.y;
 		}
 
 		auto raycast = [&](V3 begin, V3 end, Hit& outHit, V3i& outBlock, auto&& predicate, V3 extent = 0) {
@@ -1415,6 +1392,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 			std::cin >> command.z;
 			SetForegroundWindow(window.hwnd);
 			newPlayerPos.relPos = w2r(command, newPlayerPos.chunkPos);
+			playerVel = 0;
 		}
 		else {
 			newPlayerPos.relPos += playerVel * targetFrameTime;
@@ -1511,7 +1489,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		auto matrixVP = matrixCamRotProj * matrixCamPos;
 
 		FrustumPlanes frustumPlanes { matrixVP };
-		frustumPlanes.normalize();
 		static std::vector<Chunk*> chunksToDraw;
 		chunksToDraw.clear();
 
@@ -1554,7 +1531,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		{
 			V3i placePos, breakPos;
 			Hit hit;
-			if (raycast(cameraPos, cameraPos + viewDir * 3, hit, placePos, isBreakable)) {
+			if (raycast(cameraPos, cameraPos + viewDir * 5, hit, placePos, isBreakable)) {
 				breakPos = placePos;
 				placePos += (V3i)hit.n;
 				drawCBuffer.model = M4::translation((V3)breakPos) * M4::scaling(1.01f);
@@ -1647,6 +1624,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		f32 frameTime = WH::getSecondsElapsed(lastCounter, endCounter, counterFrequency);
 		lastCounter = endCounter;
 
+#ifndef BUILD_RELEASE
+
 		static u32 meshesBuiltInSec = 0;
 		static f32 generateMS = 0;
 		static f32 buildMeshMS = 0;
@@ -1669,8 +1648,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 				1.f / frameTime,
 				playerPos.chunkPos.x, playerPos.chunkPos.y, playerPos.chunkPos.z,
 				playerPos.relPos.x, playerPos.relPos.y, playerPos.relPos.z,
-				ramValue, ramUnit, vramValue, vramUnit, renderer.getDrawCalls(), generateMS, buildMeshMS, pmc.WorkingSetSize / (CHUNK_SIZE + sizeof(Chunk)), meshesBuiltInSec);
+				ramValue, ramUnit, vramValue, vramUnit, renderer.getDrawCalls(), generateMS, buildMeshMS, world.blockArena.occupiedCount, meshesBuiltInSec);
 		SetWindowText(window.hwnd, windowTitle);
+
+#endif
 	}
 	ClipCursor(0);
 	SetCursor(LoadCursorA(0, IDC_ARROW));
