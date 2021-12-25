@@ -1,4 +1,4 @@
-// TODO: 
+// TODO:
 // Free memory of far chunks, but left them visible
 // Make approximate meshes for far chunks
 
@@ -30,7 +30,7 @@
 #include <io.h>
 #include <Psapi.h>
 #include <stdio.h>
-#include <stdint.h> 
+#include <stdint.h>
 #include <time.h>
 #include <timeapi.h>
 #include <Windows.h>
@@ -298,7 +298,7 @@ using BlockID = u8;
 #define AXIS_NZ 5
 struct BlockInfo {
 	enum class Type {
-		default,
+		_default,
 		x,
 		topSideBottom,
 		//water
@@ -351,7 +351,7 @@ bool isBreakable(BlockID id) {
 #define FOR_BLOCK_IN_CHUNK 		    \
 for (int z=0; z < CHUNK_WIDTH; ++z) \
 for (int x=0; x < CHUNK_WIDTH; ++x) \
-for (int y=0; y < CHUNK_WIDTH; ++y) 
+for (int y=0; y < CHUNK_WIDTH; ++y)
 #define BLOCK_INDEX(x,y,z) ((z) * CHUNK_WIDTH * CHUNK_WIDTH + (x) * CHUNK_WIDTH + (y))
 
 #define FOREACH_BLOCK(b, blocks) FOR_BLOCK_IN_CHUNK \
@@ -607,7 +607,7 @@ struct World {
 			assert(c->state == Chunk::State::wantedToBeDeleted);
 			//assert(c->userCount == 0);
 			if (c->userCount == 0) {
-				c->workEnded.wait();
+				//c->workEnded.wait();
 				saveAndDelete(c);
 			}
 		}
@@ -810,18 +810,18 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	int chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
 	int superSampleWidth = 1;
 
-	puts(R"(		����
-	1 - ������
-	2 - ���������)");
+	puts(R"(		Menu
+	1 - Start
+	2 - Configure)");
 
 	char menuItem;
 	std::cin >> menuItem;
 	if (menuItem == '2') {
-		puts("��������� ���������� (���������� �� 2 �� 8)");
+		puts("Draw distance (recommend from 2 to 8)");
 		std::cin >> chunkDrawDistance;
 		if (chunkDrawDistance <= 0) {
 			chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
-			puts("��� ����. ������ " STRINGIZE(DEFAULT_DRAW_DISTANCE));
+			puts("Negative number is not allowed. Changing to default " STRINGIZE(DEFAULT_DRAW_DISTANCE));
 		}
 		MEMORYSTATUSEX memoryStatus {};
 		memoryStatus.dwLength = sizeof(MEMORYSTATUSEX);
@@ -831,14 +831,14 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		size_t memoryNeeded = x * x * x;
 		if (memoryNeeded > memoryStatus.ullTotalPhys) {
 			auto [value,unit] = normalizeBytes<double>(memoryNeeded);
-			printf("�� ������� ������ (%.3f %s ����������). ������ " STRINGIZE(DEFAULT_DRAW_DISTANCE) "\n", value, unit);
+			printf("Not enough memory (%.3f %s is needed). Defaulting to " STRINGIZE(DEFAULT_DRAW_DISTANCE) "\n", value, unit);
 			chunkDrawDistance = DEFAULT_DRAW_DISTANCE;
 		}
-		puts("����������� [1,4]\n\t1 - ���\n\t2 - 4x\n\t3 - 9x\n\t4 - 16x");
+		puts("Antialiasing [1,4]\n\t1 - Off\n\t2 - 4x\n\t3 - 9x\n\t4 - 16x");
 		std::cin >> superSampleWidth;
 		if (superSampleWidth < 1 || superSampleWidth > 4) {
 			superSampleWidth = 1;
-			puts("��� ����. ������ 1");
+			puts("Invalid input. Defaulting to 1");
 		}
 	}
 	int chunkLoadDistance = chunkDrawDistance + 1;
@@ -957,7 +957,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	ID3D11ShaderResourceView* selectionTex   = textureFQ.pop();
 	puts("Textures loaded");
 
-	f32 farClipPlane = 1000;
+	f32 farClipPlane = 2000;
 
 	ID3D11RenderTargetView* backBuffer = 0;
 	D3D11::DepthStencilView depthView;
@@ -968,7 +968,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	D3D11::ConstantBuffer<ScreenCBuffer> screenCBuffer;
 
 	sceneCBuffer.fogDistance = (f32)chunkDrawDistance * CHUNK_WIDTH;
-	
+
 	drawCBuffer  .create(renderer, D3D11_USAGE_DYNAMIC);
 	frameCBuffer .create(renderer, D3D11_USAGE_DYNAMIC);
 	sceneCBuffer .create(renderer, D3D11_USAGE_IMMUTABLE);
@@ -979,7 +979,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 	M4 projection;
 
-	blockInfos[BLOCK_DIRT] = {2, {}, BlockInfo::Type::default, {1,1,1,1,1,1}};
+	blockInfos[BLOCK_DIRT] = {2, {}, BlockInfo::Type::_default, {1,1,1,1,1,1}};
 	blockInfos[BLOCK_GRASS] = {0, {1,1,0,2,1,1}, BlockInfo::Type::topSideBottom, {0,0,1,1,0,0}};
 	blockInfos[BLOCK_TALL_GRASS] = {3, {}, BlockInfo::Type::x};
 	//blockInfos[BLOCK_WATER] = {4, {}, BlockInfo::Type::water};
@@ -1055,7 +1055,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 				}
 			}
 		}
-#else 
+#else
 		for (int r = 0; r <= loadDist; ++r) {
 			{
 				int x = -r;
@@ -1154,7 +1154,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 					bool previous   =  (msg.lParam & u32(1 << 30)) != 0;
 					bool transition =  (msg.lParam & u32(1 << 31)) != 0;
 					if (previous == transition) { // Don't handle repeated
-						//printf("INPUT: Code: 0X%x, Char: %c, extended: %i, context: %i, previous: %i, transition: %i\n", 
+						//printf("INPUT: Code: 0X%x, Char: %c, extended: %i, context: %i, previous: %i, transition: %i\n",
 						//       Code, Code, extended, context, previous, transition);
 						input.current.keys[code] = !previous;
 						if (context && code == VK_F4) {
@@ -1317,7 +1317,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		auto isInsideBlock = [&](V3 pos, V3 extent, V3i block) {
 			V3i mini = (pos - extent).rounded();
 			V3i maxi = (pos + extent).rounded();
-			return 
+			return
 				mini.x <= block.x && block.x <= maxi.x &&
 				mini.y <= block.y && block.y <= maxi.y &&
 				mini.z <= block.z && block.z <= maxi.z;
@@ -1340,7 +1340,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		auto newPlayerPos = playerPos;
 		if (moveMode == MoveMode::noclip) {
 			grounded = false;
-		} 
+		}
 		else {
 			// raycast
 			bool newGrounded = false;
@@ -1421,13 +1421,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		cameraPos.y -= stepLerp;
 		V3 viewDir = M4::rotationZXY(-cameraRot) * V3 { 0, 0, 1 };
 
-		const f32 dayPeriod = 10; // minutes
-		const f32 startHours = 6;
+		const f32 dayPeriod = 4000; // minutes
+		const f32 startHours = 7;
 		static f32 time = dayPeriod * 60 * (startHours / 24);
 		time += targetFrameTime;
 
 		float dayTime = time / (60 * dayPeriod);
-		
+
 		static constexpr V3 skyColors[] {
 			{.1,.1,.2},
 			{.1,.1,.2},
@@ -1521,7 +1521,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 #endif
 		renderer.vsSetShader(chunkVS);
 		renderer.psSetShader(chunkPS);
-		
+
 		drawCBuffer.camRotProjection = matrixCamRotProj;
 
 		for (auto& c : chunksToDraw) {
@@ -1574,7 +1574,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 		renderer.setViewport(window.clientSize);
 		renderer.setRenderTarget(backBuffer, 0);
-		
+
 		// BLIT
 		renderer.setViewport(window.clientSize);
 		renderer.vsSetShader(blitVS);
@@ -1624,7 +1624,32 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		f32 frameTime = WH::getSecondsElapsed(lastCounter, endCounter, counterFrequency);
 		lastCounter = endCounter;
 
-#ifndef BUILD_RELEASE
+#ifdef BUILD_RELEASE
+		static u32 meshesBuiltInSec = 0;
+		static f32 generateMS = 0;
+		static f32 buildMeshMS = 0;
+		static f32 secondTimer = 0;
+
+		secondTimer += targetFrameTime;
+
+		if (secondTimer >= 10) {
+			secondTimer -= 10;
+			generateMS = (f32)generateTime / generateCount / counterFrequency * 1000.f;
+			buildMeshMS = (f32)buildMeshTime / buildMeshCount / counterFrequency * 1000.f;
+			meshesBuiltInSec = meshesBuilt.exchange(0);
+		}
+		PROCESS_MEMORY_COUNTERS pmc;
+		GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+
+		auto [ramValue, ramUnit] = normalizeBytes<double>(pmc.WorkingSetSize);
+		auto [vramValue, vramUnit] = normalizeBytes<double>(renderer.getVRAM());
+		sprintf(windowTitle, "gstorm - FPS: %.1f, Position: (%i/%i/%i) (%.2f/%.2f/%.2f), RAM usage: %.3f %s, VRAM usage: %.3f %s, Draws: %u/f, Gen. time: %.3fms/c, Mesh time: %.3fms/c, Meshes built: %u/s",
+				1.f / frameTime,
+				playerPos.chunkPos.x, playerPos.chunkPos.y, playerPos.chunkPos.z,
+				playerPos.relPos.x, playerPos.relPos.y, playerPos.relPos.z,
+				ramValue, ramUnit, vramValue, vramUnit, renderer.getDrawCalls(), generateMS, buildMeshMS, meshesBuiltInSec);
+		SetWindowText(window.hwnd, windowTitle);
+#else
 
 		static u32 meshesBuiltInSec = 0;
 		static f32 generateMS = 0;
@@ -1641,7 +1666,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		}
 		PROCESS_MEMORY_COUNTERS pmc;
 		GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
-		
+
 		auto [ramValue, ramUnit] = normalizeBytes<double>(pmc.WorkingSetSize);
 		auto [vramValue, vramUnit] = normalizeBytes<double>(renderer.getVRAM());
 		sprintf(windowTitle, "gstorm - FPS: %.1f, Position: (%i/%i/%i) (%.2f/%.2f/%.2f), RAM usage: %.3f %s, VRAM usage: %.3f %s, Draws: %u/f, Gen. time: %.3fms/c, Mesh time: %.3fms/c, Loaded chunks: %zu, Meshes built: %u/s",

@@ -54,8 +54,8 @@ struct Chunk {
 	};
 	enum class State {
 		unloaded,
-		loaded, 
-		buildingMesh, 
+		loaded,
+		buildingMesh,
 		wantedToBeDeleted
 	};
 	MeshBuffer meshBuffer;
@@ -251,7 +251,7 @@ struct Chunk {
 				0x00808000,
 			};
 			switch (blockInfo.type) {
-				case BlockInfo::Type::default:
+				case BlockInfo::Type::_default:
 				case BlockInfo::Type::topSideBottom: {
 					bool visible[6];
 					visible[AXIS_PX] = x == CHUNK_WIDTH - 1 ? (neighbors[0] ? isTransparent(neighbors[0]->getBlock(0, y, z              )) : true) : isTransparent(getBlock(x + 1, y, z));
